@@ -15,7 +15,6 @@ wandb
 kaleido
 ddsketch
 jupyterlab
-flashinfer == 0.0.6
 pillow
 tiktoken
 grpcio
