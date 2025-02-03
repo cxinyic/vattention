@@ -86,6 +86,8 @@ def _convert_tokens_to_string_with_added_encoders(
 # Based on
 # https://github.com/huggingface/text-generation-inference/blob/v0.9.4/server/text_generation_server/models/model.py#L62C9-L62C15
 # under Apache 2.0 license
+
+vocab_size = None
 def detokenize_incrementally(
     tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
     all_input_ids: List[int],
@@ -94,6 +96,10 @@ def detokenize_incrementally(
     read_offset: int = 0,
     skip_special_tokens: bool = False,
 ) -> Tuple[List[str], str, int, int]:
+    global vocab_size
+    if vocab_size is None:  # Check if it hasn't been set yet
+        vocab_size = len(tokenizer)
+
     new_token_id = all_input_ids[-1]
 
     # This is the first iteration for this sequence
@@ -115,7 +121,7 @@ def detokenize_incrementally(
     else:
         # Put new_token_id in a list so skip_special_tokens is respected
         try:
-            if new_token_id >= len(tokenizer):
+            if new_token_id >= vocab_size:
                 new_tokens = [""]
             else:
                 new_tokens = tokenizer.convert_ids_to_tokens(
