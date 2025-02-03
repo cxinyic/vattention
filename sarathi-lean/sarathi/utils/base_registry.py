@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from sarathi.benchmark.types import BaseIntEnum
+from sarathi.benchmark.custom_types import BaseIntEnum
 
 
 class BaseRegistry(ABC):

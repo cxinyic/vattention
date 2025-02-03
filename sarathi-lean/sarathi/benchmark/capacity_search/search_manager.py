@@ -8,7 +8,7 @@ from sarathi.benchmark.capacity_search.ray_utils import (
     RayParallelRunner,
     ResourceManager,
 )
-from sarathi.benchmark.types import ReplicaResourceMapping
+from sarathi.benchmark.custom_types import ReplicaResourceMapping
 from sarathi.logger import init_logger
 
 logger = init_logger(__name__)

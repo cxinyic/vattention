@@ -153,8 +153,8 @@ class BaseLLMEngine:
         driver_ip = None
         for rank, (node_ip, _) in enumerate(replica_resource_mapping):
             worker_class = ray.remote(
-                num_cpus=1,
-                # num_gpus=1, # we don't use ray for managing GPUs
+                # num_cpus=1,
+                num_gpus=1, # we don't use ray for managing GPUs
                 **ray_remote_kwargs,
             )(RayWorker)
 
