@@ -3,9 +3,13 @@
 src=$(dirname "$(realpath "$0")")
 source $src/helpers/common.sh
 
-models="yi-6b llama-3-8b yi-34b"
-attn_backends="fa_paged fi_paged fa_vattn"
-batch_sizes="1 2 4 8 12 16 32"
+# models="yi-6b llama-3-8b yi-34b"
+# attn_backends="fa_paged fi_paged fa_vattn"
+# batch_sizes="1 2 4 8 12 16 32"
+
+models="yi-6b"
+attn_backends="fa_vattn"
+batch_sizes="8"
 
 context_length=16384
 run_experiments() {
@@ -31,13 +35,13 @@ run_experiments() {
                     --synthetic_request_generator_interval_provider static \
                     --uniform_request_length_generator_max_tokens $context_length \
                     --uniform_request_length_generator_min_tokens $context_length \
-                    --uniform_request_length_generator_prefill_to_decode_ratio 500 \
+                    --uniform_request_length_generator_prefill_to_decode_ratio 32 \
                     --replica_scheduler_provider vllm \
                     --trace_request_length_generator_prefill_scale_factor 1 \
                     --trace_request_length_generator_decode_scale_factor 1 \
                     --replica_scheduler_max_batch_size $bs \
-                    --vllm_scheduler_max_tokens_in_batch $context_length \
-                    --model_max_model_len $context_length \
+                    --vllm_scheduler_max_tokens_in_batch 16384 \
+                    --model_max_model_len 16384 \
                     --metrics_store_enable_op_level_metrics false \
                     --metrics_store_keep_individual_batch_metrics true \
                     --output_dir $output_dir \
@@ -53,4 +57,3 @@ run_experiments() {
 }
 
 run_experiments
-python $src/helpers/plot_figure_7.py

@@ -56,7 +56,8 @@ from sarathi.model_executor.weight_utils import (
     load_tensor_parallel_weights,
 )
 from sarathi.worker.cache_engine import KVCache
-
+from sarathi.logger import init_logger
+logger = init_logger(__name__)
 
 class LlamaMLP(nn.Module):
 
@@ -477,7 +478,6 @@ class LlamaForCausalLM(nn.Module):
                     param, loaded_weight, tensor_model_parallel_rank
                 )
                 continue
-
             load_tensor_parallel_weights(
                 param,
                 loaded_weight,

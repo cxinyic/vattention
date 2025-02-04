@@ -109,6 +109,27 @@ class BaseLLMEngine:
 
         # Create the parallel GPU workers.
         self._init_workers_ray()
+        
+        # Profile the memory usage and initialize the cache.
+        # self._init_cache()
+        # # Initialize the worker map.
+        # self._init_worker_map()
+
+        # self.mark_initial_memory_profiling_done()
+
+        # # Create the scheduler.
+        # self.scheduler = SchedulerRegistry.get(
+        #     scheduler_config.type, scheduler_config, cache_config
+        # )
+        # self.scheduler.set_block_manager(model_config)
+        
+
+        # self._scheduler_timer = CpuTimer(CpuOperationMetrics.SCHEDULE)
+        # self._process_model_outputs_timer = CpuTimer(
+        #     CpuOperationMetrics.PROCESS_MODEL_OUTPUTS
+        # )
+    
+    def init_rest(self):
         # Profile the memory usage and initialize the cache.
         self._init_cache()
         # Initialize the worker map.
@@ -118,16 +139,15 @@ class BaseLLMEngine:
 
         # Create the scheduler.
         self.scheduler = SchedulerRegistry.get(
-            scheduler_config.type, scheduler_config, cache_config
+            self.scheduler_config.type, self.scheduler_config, self.cache_config
         )
-        self.scheduler.set_block_manager(model_config)
+        self.scheduler.set_block_manager(self.model_config)
         
 
         self._scheduler_timer = CpuTimer(CpuOperationMetrics.SCHEDULE)
         self._process_model_outputs_timer = CpuTimer(
             CpuOperationMetrics.PROCESS_MODEL_OUTPUTS
         )
-
     def _validate_parallel_config(self) -> None:
         assert self.parallel_config.pipeline_parallel_size == 1
 

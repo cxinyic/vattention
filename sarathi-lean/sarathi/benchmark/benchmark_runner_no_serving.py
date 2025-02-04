@@ -6,7 +6,6 @@ import time
 import ray
 import wandb
 from tqdm import tqdm
-from typing import Tuple, Set
 
 from sarathi import LLMEngine, SamplingParams
 from sarathi.benchmark.config import Config
@@ -14,7 +13,6 @@ from sarathi.benchmark.entities import Request
 from sarathi.benchmark.request_generator import RequestGeneratorRegistry
 from sarathi.benchmark.custom_types import ReplicaResourceMapping, ResourceMapping
 from sarathi.benchmark.utils.random import set_seeds
-from sarathi.engine.base_llm_engine import BaseLLMEngine
 from sarathi.config import MetricsConfig
 from sarathi.core.datatypes.request_output import RequestOutput
 from sarathi.metrics.metrics_store import MetricsStore
@@ -25,42 +23,48 @@ logger = logging.getLogger(__name__)
 
 
 class BenchmarkRunner:
+
     def __init__(
         self,
         replica_id: int,
         config: Config,
         replica_resource_mapping: ResourceMapping = [],
         upgrade_time: float = None,  # Optional upgrade time
-        is_new_runner: bool = False  # Flag to indicate if this is the new runner for upgrade
     ) -> None:
         self._replica_id = replica_id
         self._config = config
         self._num_replicas = self._config.cluster_num_replicas
         self._upgrade_time = upgrade_time
-        self._is_new_runner = is_new_runner
-        
+        # Only initialize progress state if upgrade is enabled
+        self._progress_state = {} if upgrade_time is not None else None
+
         # Track request states
         self._request_states = {}  # Store all request states
         self._finished_requests = {}  # Store completed requests
         self._pending_requests = {}  # Store in-progress requests
-        
+
+        self._replica_id = replica_id
+        self._config = config
+        self._num_replicas = self._config.cluster_num_replicas
+
         self._time_limit = self._config.time_limit
         if not self._time_limit:
             self._time_limit = float("inf")
 
         output_dir = f"{self._config.output_dir}/replica_{replica_id}"
-        if self._is_new_runner:
-            output_dir = f"{output_dir}_new"
         os.makedirs(output_dir, exist_ok=True)
 
-        # For new runner, just initialize engine without loading requests
-        if not self._is_new_runner:
-            set_seeds(config.seed)
-            request_generator = RequestGeneratorRegistry.get_from_str(
-                self._config.request_generator_provider, self._config
-            )
-            self._requests = request_generator.generate()
-            self._requests = self._requests[self._replica_id :: self._num_replicas]
+        set_seeds(config.seed)
+        request_generator = RequestGeneratorRegistry.get_from_str(
+            self._config.request_generator_provider, self._config
+        )
+        self._requests = request_generator.generate()
+
+        # select every nth request for this replica
+        # e.g. if there are 4 replicas, and this is the 2nd replica, then
+        # we will select the 2nd, 6th, 10th, ... requests
+        # round robin scheduling
+        self._requests = self._requests[self._replica_id :: self._num_replicas]
 
         if self._num_replicas == 1:
             wandb_project = self._config.metrics_store_wandb_project
@@ -122,40 +126,6 @@ class BenchmarkRunner:
             # engine config
             trust_remote_code=True,
         )
-        if not self._is_new_runner:
-            self._llm_engine.init_rest()
-    
-    def _select_requests_for_upgrade(self) -> Tuple[Set[str], Set[str]]:
-        """Select which requests to keep/remove during upgrade"""
-        pending_seq_ids = set(self._pending_requests.keys())
-        num_keep = max(int(len(pending_seq_ids) * self._keep_ratio), 1)  # Keep at least 1
-        
-        # Priority: keep requests that are closest to completion
-        requests_progress = {
-            seq_id: len(state['current_token_ids']) / state['original_request'].num_decode_tokens
-            for seq_id, state in self._pending_requests.items()
-        }
-        
-        sorted_requests = sorted(requests_progress.items(), key=lambda x: x[1], reverse=True)
-        keep_seq_ids = set(seq_id for seq_id, _ in sorted_requests[:num_keep])
-        remove_seq_ids = pending_seq_ids - keep_seq_ids
-        
-        logger.info(f"Selected {len(keep_seq_ids)} requests to keep and {len(remove_seq_ids)} to remove during upgrade")
-        return keep_seq_ids, remove_seq_ids
-
-    def _remove_requests(self, seq_ids: Set[str]):
-        """Remove requests and save their states"""
-        for seq_id in seq_ids:
-            if seq_id in self._pending_requests:
-                state = self._pending_requests[seq_id]
-                self._removed_requests[seq_id] = state
-                # Note: actual KV cache freeing will be implemented in the engine
-                del self._pending_requests[seq_id]
-                logger.info(f"Removed request {seq_id} for upgrade")
-                
-    def _start_new_engine(self):
-        # TODO: Implement this
-        pass
 
     def _get_input_params(
         self, request: Request, first_request_time: float
@@ -188,31 +158,10 @@ class BenchmarkRunner:
 
         self._llm_engine.reset_metrics()
 
-    def notify_ready(self):
-        """Signal that this new runner is ready to take over"""
-        if not self._is_new_runner:
-            raise RuntimeError("Only new runner can notify ready")
-        logger.info(f"New runner {self._replica_id} ready to take over")
-        return "NEW_RUNNER_READY"
-
-    def is_ready_for_transfer(self):
-        """Check if this new runner is ready to receive states"""
-        if not self._is_new_runner:
-            raise RuntimeError("Only new runner can be checked for ready")
-        # Add any additional readiness checks here
-        return True
-    
     def _run(self) -> str:
         if self._config.enable_profiling:
             self._llm_engine.start_profiling()
 
-        if self._is_new_runner:
-            # New runner just loads weights and waits
-            # TODO: Implement weight loading
-            logger.info("New runner loaded weights and ready")
-            return "WEIGHTS_LOADED"
-
-        # Original runner's run logic
         num_processed_requests = 0
         num_steps = 0
         pbar = tqdm(
@@ -224,9 +173,13 @@ class BenchmarkRunner:
         while num_processed_requests < len(self._requests):
             elapsed_time = time.monotonic() - start_time
             
-            if elapsed_time > self._upgrade_time:
+            # Check elapsed time for upgrade
+            if self._upgrade_time is not None and elapsed_time >= self._upgrade_time:
                 logger.info(f"Replica {self._replica_id} stopping for upgrade after {elapsed_time:.2f} seconds")
-                return "UPGRADE_NEEDED"  # This sets the status
+                return "UPGRADE_NEEDED"
+            
+            if elapsed_time > self._time_limit:
+                break
 
             step_outputs = self._llm_engine.step()
             num_steps += 1
@@ -249,6 +202,7 @@ class BenchmarkRunner:
             self._llm_engine.stop_profiling()
 
         return "COMPLETED"
+
     def _add_requests(self) -> None:
         """Add all requests and initialize their states"""
         index = 0
@@ -323,24 +277,23 @@ class BenchmarkRunner:
             # logger.info(f"Request {seq_id} updated with output tokens: {len(self._pending_requests[seq_id]['current_token_ids'])}, prompt len is {len(self._pending_requests[seq_id]['prompt_token_ids'])}")
 
     def run(self) -> None:
-        """Main run loop"""
+        """Main run loop with upgrade support"""
         self._llm_engine.reset_metrics()
-        
-        if not self._is_new_runner:
-            self._add_requests()
-            
+        self._add_requests()
         status = self._run()
+        
+        # If upgrade is needed, save progress and return
         if status == "UPGRADE_NEEDED":
             progress = self.save_progress()
             metrics = self._llm_engine.get_metric_store()
             self._llm_engine.cleanup()
             return {"status": "UPGRADE_NEEDED", "progress": progress, "metrics": metrics}
         
-        if status == "WEIGHTS_LOADED":
-            return {"status": "WEIGHTS_LOADED"}
-            
+        # Normal completion
+        self._llm_engine.pull_worker_metrics()
+        metric_store = self._llm_engine.get_metric_store()
         self._llm_engine.cleanup()
-        return "COMPLETED"
+        return metric_store
     
     def new_run(self) -> None:
         """Main run loop with upgrade support"""
@@ -656,31 +609,22 @@ class BenchmarkRunnerLauncher:
             ray.get([runner.run.remote() for runner in new_runners])
         else:
             # Single replica case
-            
-            # Start the original runner directly (no Ray)
             result = self._runner.run()
+            progress = result["progress"]
             
-            if isinstance(result, dict) and result["status"] == "UPGRADE_NEEDED":
-                # Create new runner and start loading weights
-                # replica_resource_mapping = self._get_replica_resource_mapping()
-                new_runner = BenchmarkRunner(
-                    0, 
-                    self._new_config, 
-                    self.replica_resource_mapping["0"],
-                    upgrade_time=None,
-                    is_new_runner=True
-                )
-                
-                # Wait for new runner to be ready (direct call)
-                new_runner_result = new_runner.run()
-                if isinstance(new_runner_result, dict) and new_runner_result["status"] == "WEIGHTS_LOADED":
-                    # Get progress from when upgrade was triggered
-                    progress = result["progress"]
-                    
-                    # Transfer progress to new runner
-                    new_runner.load_progress(progress)
-                    
-                    # Start new runner with loaded progress
-                    new_runner.new_run()
-        
-        wandb.finish()
+            # Clean up Ray resources
+            ray.shutdown()
+            ray.init(ignore_reinit_error=True)
+            
+            # Create new runner with new config
+            replica_resource_mapping = self._get_replica_resource_mapping()
+            new_runner = BenchmarkRunner(
+                0, 
+                self._new_config, 
+                replica_resource_mapping["0"],
+                upgrade_time=None
+            )
+            new_runner.load_progress(progress)
+            
+            # Run second phase
+            new_runner.new_run()

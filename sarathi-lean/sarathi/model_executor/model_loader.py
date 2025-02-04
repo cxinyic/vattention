@@ -10,7 +10,8 @@ from transformers import PretrainedConfig
 from sarathi.config import ModelConfig
 from sarathi.model_executor.models import *  # pylint: disable=wildcard-import
 from sarathi.model_executor.weight_utils import initialize_dummy_weights
-
+from sarathi.logger import init_logger
+logger = init_logger(__name__)
 # TODO(woosuk): Lazy-load the model classes.
 _MODEL_REGISTRY = {
     "FalconForCausalLM": FalconForCausalLM,
@@ -59,6 +60,7 @@ def get_model(model_config: ModelConfig) -> nn.Module:
             initialize_dummy_weights(model)
         else:
             # Load the weights from the cached or downloaded files.
+            logger.info(f"XY: Loading model weights")
             model.load_weights(
                 model_config.model,
                 model_config.download_dir,

@@ -43,6 +43,7 @@ class ModelRunner:
         self.device = device
         self.rank = rank
 
+        logger.info(f"XY: before get model in ModelRunner")
         self.model = get_model(self.model_config)
         get_attention_wrapper().init(
             self.model_config,
