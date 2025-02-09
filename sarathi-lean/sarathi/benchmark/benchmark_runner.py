@@ -19,11 +19,34 @@ from sarathi.config import MetricsConfig
 from sarathi.core.datatypes.request_output import RequestOutput
 from sarathi.metrics.metrics_store import MetricsStore
 from sarathi.utils import get_ip
+import threading
 
 
 logger = logging.getLogger(__name__)
 
-
+# Create a shared state class for runner communication
+class UpgradeState:
+    def __init__(self):
+        self.preemption_complete = False
+        self.weights_loaded = False
+        self._lock = threading.Lock()  # For thread safety
+        
+    def set_preemption_complete(self):
+        with self._lock:
+            self.preemption_complete = True
+            
+    def set_weights_loaded(self):
+        with self._lock:
+            self.weights_loaded = True
+            
+    def is_preemption_complete(self):
+        with self._lock:
+            return self.preemption_complete
+            
+    def is_weights_loaded(self):
+        with self._lock:
+            return self.weights_loaded
+        
 class BenchmarkRunner:
     def __init__(
         self,
@@ -38,6 +61,7 @@ class BenchmarkRunner:
         self._num_replicas = self._config.cluster_num_replicas
         self._upgrade_time = upgrade_time
         self._is_new_runner = is_new_runner
+        self.upgrade_state = None
         
         # Track request states
         self._request_states = {}  # Store all request states
@@ -76,6 +100,9 @@ class BenchmarkRunner:
             chunk_size = self._config.sarathi_scheduler_chunk_size
         elif self._config.replica_scheduler_provider == "simple_chunking":
             chunk_size = self._config.simple_chunking_scheduler_chunk_size
+        upgrade_engine_type = "old"
+        if self._is_new_runner:
+            upgrade_engine_type = "new"
 
         self._llm_engine = LLMEngine.from_engine_args(
             # replica config
@@ -121,10 +148,16 @@ class BenchmarkRunner:
             keep_individual_batch_metrics=self._config.metrics_store_keep_individual_batch_metrics,
             # engine config
             trust_remote_code=True,
+            # upgrade config
+            upgrade_engine_type=upgrade_engine_type,
         )
         if not self._is_new_runner:
             self._llm_engine.init_rest()
-    
+
+    def set_upgrade_state(self, upgrade_state: UpgradeState) -> None:
+        """Set the upgrade state object for coordination during upgrade"""
+        self.upgrade_state = upgrade_state
+
     def _select_requests_for_upgrade(self) -> Tuple[Set[str], Set[str]]:
         """Select which requests to keep/remove during upgrade"""
         pending_seq_ids = set(self._pending_requests.keys())
@@ -202,53 +235,12 @@ class BenchmarkRunner:
         # Add any additional readiness checks here
         return True
     
-    def _run(self) -> str:
-        if self._config.enable_profiling:
-            self._llm_engine.start_profiling()
+    def _new_run(self) -> str:
+        # TODO: Implement weight loading
+        logger.info("New runner loaded weights and ready")
+        return "WEIGHTS_LOADED"
 
-        if self._is_new_runner:
-            # New runner just loads weights and waits
-            # TODO: Implement weight loading
-            logger.info("New runner loaded weights and ready")
-            return "WEIGHTS_LOADED"
-
-        # Original runner's run logic
-        num_processed_requests = 0
-        num_steps = 0
-        pbar = tqdm(
-            total=len(self._requests),
-            desc=f"Replica {self._replica_id} processed requests",
-        )
-        start_time = time.monotonic()
-
-        while num_processed_requests < len(self._requests):
-            elapsed_time = time.monotonic() - start_time
-            
-            if elapsed_time > self._upgrade_time:
-                logger.info(f"Replica {self._replica_id} stopping for upgrade after {elapsed_time:.2f} seconds")
-                return "UPGRADE_NEEDED"  # This sets the status
-
-            step_outputs = self._llm_engine.step()
-            num_steps += 1
-
-            for output in step_outputs:
-                self._update_request_state(output)
-                if output.finished:
-                    num_processed_requests += 1
-                    pbar.update(1)
-
-        end_time = time.monotonic()
-        pbar.close()
-        
-        logger.info(
-            f"Replica {self._replica_id} exiting after processing {num_processed_requests} requests "
-            f"({num_steps} iterations), Total time taken: {end_time - start_time:.2f} seconds"
-        )
-
-        if self._config.enable_profiling:
-            self._llm_engine.stop_profiling()
-
-        return "COMPLETED"
+    
     def _add_requests(self) -> None:
         """Add all requests and initialize their states"""
         index = 0
@@ -323,30 +315,101 @@ class BenchmarkRunner:
             # logger.info(f"Request {seq_id} updated with output tokens: {len(self._pending_requests[seq_id]['current_token_ids'])}, prompt len is {len(self._pending_requests[seq_id]['prompt_token_ids'])}")
 
     def run(self) -> None:
-        """Main run loop"""
+        """Main run loop until upgrade needed or completion"""
         self._llm_engine.reset_metrics()
-        
-        if not self._is_new_runner:
-            self._add_requests()
-            
-        status = self._run()
+        self._add_requests()
+        status = self._run_normal()
+        time.sleep(5)
+
         if status == "UPGRADE_NEEDED":
             progress = self.save_progress()
             metrics = self._llm_engine.get_metric_store()
-            self._llm_engine.cleanup()
             return {"status": "UPGRADE_NEEDED", "progress": progress, "metrics": metrics}
-        
+            
         if status == "WEIGHTS_LOADED":
             return {"status": "WEIGHTS_LOADED"}
             
         self._llm_engine.cleanup()
         return "COMPLETED"
+
+    def prepare_for_upgrade(self) -> dict:
+        """Prepare for upgrade by preempting sequences"""
+        required_blocks = 20  # Configure as needed
+        self._llm_engine.prepare_for_upgrade(required_blocks)
+        return {"status": "PREEMPTION_COMPLETE"}
+
+    def run_during_upgrade(self) -> dict:
+        """Continue running with reduced capacity during upgrade"""
+        self._llm_engine.scheduler.set_upgrade()
+        
+        num_processed_requests = 0
+        num_steps = 0
+        pbar = tqdm(
+            total=len(self._requests),
+            desc=f"Replica {self._replica_id} running during upgrade",
+        )
+        
+        while not self.upgrade_state.is_weights_loaded():
+            step_outputs = self._llm_engine.step()
+            num_steps += 1
+
+            for output in step_outputs:
+                self._update_request_state(output)
+                if output.finished:
+                    num_processed_requests += 1
+                    pbar.update(1)
+        
+        pbar.close()
+        progress = self.save_progress()
+        return {"status": "READY_FOR_HANDOVER", "progress": progress}
+
+    def _run_normal(self) -> str:
+        """Original run logic until upgrade needed"""
+        if self._config.enable_profiling:
+            self._llm_engine.start_profiling()
+
+        num_processed_requests = 0
+        num_steps = 0
+        pbar = tqdm(
+            total=len(self._requests),
+            desc=f"Replica {self._replica_id} processed requests",
+        )
+        start_time = time.monotonic()
+
+        while num_processed_requests < len(self._requests):
+            elapsed_time = time.monotonic() - start_time
+            
+            if elapsed_time > self._upgrade_time:
+                logger.info(f"Replica {self._replica_id} stopping for upgrade after {elapsed_time:.2f} seconds")
+                return "UPGRADE_NEEDED"
+
+            step_outputs = self._llm_engine.step()
+            num_steps += 1
+
+            for output in step_outputs:
+                self._update_request_state(output)
+                if output.finished:
+                    num_processed_requests += 1
+                    pbar.update(1)
+
+        end_time = time.monotonic()
+        pbar.close()
+        
+        logger.info(
+            f"Replica {self._replica_id} exiting after processing {num_processed_requests} requests "
+            f"({num_steps} iterations), Total time taken: {end_time - start_time:.2f} seconds"
+        )
+
+        if self._config.enable_profiling:
+            self._llm_engine.stop_profiling()
+
+        return "COMPLETED"
     
     def new_run(self) -> None:
         """Main run loop with upgrade support"""
-        self._llm_engine.reset_metrics()
-        status = self._run()
-        self._llm_engine.cleanup()
+        # self._llm_engine.reset_metrics()
+        status = self._new_run()
+        # self._llm_engine.cleanup()
         
 
     def save_progress(self) -> dict:
@@ -457,6 +520,7 @@ class BenchmarkRunner:
             self._pending_requests[seq_id] = self._request_states[seq_id]
 
 
+
 class BenchmarkRunnerLauncher:
     def __init__(
         self, 
@@ -505,6 +569,7 @@ class BenchmarkRunnerLauncher:
 
         cluster_resources_keys = list(ray.available_resources().keys())
         num_gpus = ray.available_resources()["GPU"]
+        logger.info(f"Cluster resources num_gpus: {num_gpus}")
         ip_addresses = [
             x
             for x in cluster_resources_keys
@@ -512,7 +577,7 @@ class BenchmarkRunnerLauncher:
         ]
 
         runner_ip = f"node:{get_ip()}"
-
+        logger.info(f"Runner IP: {runner_ip}, ip_addresses: {ip_addresses}")
         ip_addresses.remove(runner_ip)
         ip_addresses.insert(0, runner_ip)
 
@@ -537,9 +602,10 @@ class BenchmarkRunnerLauncher:
 
         available_gpus = []
         for ip_address in ip_addresses:
-            for gpu_id in reversed(range(num_gpus_per_node)):
+            for gpu_id in (range(num_gpus_per_node)):
                 available_gpus.append((ip_address, gpu_id))
-
+        logger.info(f"Available GPUs: {available_gpus}")
+        
         for replica_id in range(num_replicas):
             replica_resource_mapping[str(replica_id)] = []
             for _ in range(num_gpus_per_replica):
@@ -614,73 +680,40 @@ class BenchmarkRunnerLauncher:
         wandb.finish()
     
     def run_with_upgrade(self):
-        """Run benchmark with upgrade"""
-        if self._is_multi_replica:
-            ray.get([runner.warmup.remote() for runner in self._runners])
+        # TODO(XY): consider multi replica later
+        # Single replica case
+        upgrade_state = UpgradeState()
+        new_runner = None
 
-            # Run first phase
-            results = ray.get([runner.run.remote() for runner in self._runners])
-            
-            # Save progress states
-            progress_states = {}
-            for i, result in enumerate(results):
-                if isinstance(result, dict):
-                    progress_states[i] = result["progress"]
-            
-            # Clean up Ray resources
-            ray.shutdown()
-            ray.init(ignore_reinit_error=True)
-            
-            # Create new runners with new config
-            new_runners = []
-            replica_resource_mapping = self._get_replica_resource_mapping()
-            
-            for replica_id in range(self._new_config.cluster_num_replicas):
-                runner = ray.remote(num_cpus=1)(BenchmarkRunner).options(
-                    resources={
-                        replica_resource_mapping[str(replica_id)][0][0]: 0.01,
-                    },
-                ).remote(
-                    replica_id,
-                    self._new_config,
-                    replica_resource_mapping[str(replica_id)],
-                    upgrade_time=None
-                )
+        def init_new_runner():
+            nonlocal new_runner
+            new_runner = BenchmarkRunner(
+                0, 
+                self._new_config, 
+                self.replica_resource_mapping["0"],
+                upgrade_time=None,
+                is_new_runner=True
+            )
+            upgrade_state.set_weights_loaded()
+            logger.info("New runner initialized")
+
+        # Run the original runner
+        result = self._runner.run()
+
+        if isinstance(result, dict):
+            if result["status"] == "UPGRADE_NEEDED":
+                # Initiate preemption in old runner
+                self._runner.set_upgrade_state(upgrade_state)
+                preemption_result = self._runner.prepare_for_upgrade()
                 
-                if replica_id in progress_states:
-                    ray.get(runner.load_progress.remote(progress_states[replica_id]))
-                
-                new_runners.append(runner)
-            
-            # Run second phase
-            ray.get([runner.run.remote() for runner in new_runners])
-        else:
-            # Single replica case
-            
-            # Start the original runner directly (no Ray)
-            result = self._runner.run()
-            
-            if isinstance(result, dict) and result["status"] == "UPGRADE_NEEDED":
-                # Create new runner and start loading weights
-                # replica_resource_mapping = self._get_replica_resource_mapping()
-                new_runner = BenchmarkRunner(
-                    0, 
-                    self._new_config, 
-                    self.replica_resource_mapping["0"],
-                    upgrade_time=None,
-                    is_new_runner=True
-                )
-                
-                # Wait for new runner to be ready (direct call)
-                new_runner_result = new_runner.run()
-                if isinstance(new_runner_result, dict) and new_runner_result["status"] == "WEIGHTS_LOADED":
-                    # Get progress from when upgrade was triggered
-                    progress = result["progress"]
+                if preemption_result["status"] == "PREEMPTION_COMPLETE":
+                    upgrade_state.set_preemption_complete()
                     
-                    # Transfer progress to new runner
-                    new_runner.load_progress(progress)
+                    # Start initializing new runner in background after preemption
+                    init_thread = threading.Thread(target=init_new_runner)
+                    init_thread.start()
                     
-                    # Start new runner with loaded progress
-                    new_runner.new_run()
-        
+                    # Old runner keeps running with reduced capacity
+                    result = self._runner.run_during_upgrade()
+
         wandb.finish()

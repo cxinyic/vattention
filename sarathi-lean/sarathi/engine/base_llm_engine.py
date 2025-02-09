@@ -28,13 +28,18 @@ from sarathi.model_executor.attention import AttentionBackend
 from sarathi.core.block_space_manager.vattention_block_space_manager import (
     vAttentionBlockSpaceManager
 )
+import torch
 
 logger = init_logger(__name__)
 
 _MAX_WORKER_CONCURRENCY = 3
 
 ModelParallelRank = Tuple[int, int]
-import torch
+
+ENGINE_GPU_ALLOCATION = {
+    "old": 0.51,
+    "new": 0.49
+}
 
 class BaseLLMEngine:
     """An LLM engine that receives requests and generates texts.
@@ -65,7 +70,11 @@ class BaseLLMEngine:
         parallel_config: ParallelConfig,
         scheduler_config: BaseSchedulerConfig,
         metrics_config: MetricsConfig,
+        upgrade_engine_type: str = "old",  # "old" or "new", defaults to "old" (This is just for upgrade mode)
     ) -> None:
+        assert upgrade_engine_type in ["old", "new"], f"Engine upgrade type must be 'old' or 'new', got {upgrade_engine_type}"
+        self.upgrade_engine_type = upgrade_engine_type
+
         logger.info(
             "Initializing an LLM engine with config: "
             f"model={model_config.model!r}, "
@@ -89,6 +98,9 @@ class BaseLLMEngine:
         self.scheduler_config = scheduler_config
         self.metrics_config = metrics_config
         self._verify_args()
+
+        # only used for upgrade mode
+        self.preempted_sequences = []
 
         self.tokenizer = get_tokenizer(
             model_config.tokenizer,
@@ -130,6 +142,7 @@ class BaseLLMEngine:
         # )
     
     def init_rest(self):
+        # self._init_workers_ray()
         # Profile the memory usage and initialize the cache.
         self._init_cache()
         # Initialize the worker map.
@@ -170,11 +183,16 @@ class BaseLLMEngine:
 
         unset_cuda_visible_devices()
 
+        # Get GPU allocation based on engine type
+        gpu_allocation = ENGINE_GPU_ALLOCATION[self.upgrade_engine_type]
+        logger.info(f"Initializing engine with GPU allocation: {gpu_allocation}")
+
+
         driver_ip = None
         for rank, (node_ip, _) in enumerate(replica_resource_mapping):
             worker_class = ray.remote(
                 # num_cpus=1,
-                num_gpus=1, # we don't use ray for managing GPUs
+                num_gpus=gpu_allocation, # we don't use ray for managing GPUs
                 **ray_remote_kwargs,
             )(RayWorker)
 
@@ -518,3 +536,40 @@ class BaseLLMEngine:
 
     def cleanup(self) -> None:
         self._run_workers("cleanup")
+    
+    def prepare_for_upgrade(self, required_blocks: int):
+        """
+        Prepare for upgrade by selecting and preempting sequences.
+        Args:
+            required_blocks: Number of blocks needed for new model weights
+        """
+        if self.upgrade_engine_type != "old":
+            logger.warning("prepare_for_upgrade called on non-old engine")
+            return
+
+        logger.info(f"Preparing for upgrade, need to free {required_blocks} blocks")
+
+        # 1. Tell block manager to select sequences to preempt
+        if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
+            sequences_to_preempt = self.scheduler.select_sequences_for_preemption(required_blocks)
+        else:
+            logger.error("Incorrect block manager type for upgrade")
+            return
+
+        logger.info(f"Selected {len(sequences_to_preempt)} sequences for preemption")
+
+        free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()
+        logger.info(f"Free CUDA memory before unmapping: {free_memory / (1024**3):.2f} GB")
+
+        # 2. release the kv memory for the selected sequences
+        self._run_workers(
+            "release_sequences_kv",
+            sequences=sequences_to_preempt,
+            get_all_outputs=True
+        )
+        logger.info("Unmapped sequences from vattention")
+
+        # Store for handover
+        self.preempted_sequences = sequences_to_preempt
+
+        return sequences_to_preempt

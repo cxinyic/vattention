@@ -27,7 +27,10 @@ class OrcaScheduler(BaseScheduler):
 
     def get_block_space_manager_class(self):
         return OrcaBlockSpaceManager
-
+    
+    def _schedule_upgrade(self) -> SchedulerOutputs:
+        pass
+    
     def _schedule(self) -> SchedulerOutputs:
         ignored_seq_ids: List[int] = []
         scheduled_seq_metadata_list: List[SequenceScheduleMetadata] = []

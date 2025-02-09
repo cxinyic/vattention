@@ -10,8 +10,10 @@ def create_config(
     batch_size: int,
     attn_backend: str,
     output_dir: str,
-    context_length: int = 16384,
+    context_length: int = 4608,
     block_size: int = None,
+    tp_degree: int = 4,
+    pp_degree: int = 1,
 ) -> Config:
     """Create benchmark configuration"""
     if block_size is None:
@@ -29,8 +31,8 @@ def create_config(
         "model_block_size": block_size,
         "model_attention_backend": attn_backend,
         "gpu_memory_utilization": 0.9,
-        "model_tensor_parallel_degree": 1,
-        "model_pipeline_parallel_degree": 1,
+        "model_tensor_parallel_degree": tp_degree,
+        "model_pipeline_parallel_degree": pp_degree,
         "model_load_format": "auto",
         
         # cluster config
@@ -43,15 +45,16 @@ def create_config(
         "synthetic_request_generator_num_requests": batch_size * 2,
         "uniform_request_length_generator_max_tokens": context_length,
         "uniform_request_length_generator_min_tokens": context_length,
-        "uniform_request_length_generator_prefill_to_decode_ratio": 32,
+        "uniform_request_length_generator_prefill_to_decode_ratio": 8,
         "trace_request_length_generator_prefill_scale_factor": 1,
         "trace_request_length_generator_decode_scale_factor": 1,
         "trace_request_generator_max_tokens": context_length,
         
         # scheduler config
-        "replica_scheduler_provider": "vllm",
+        "replica_scheduler_provider": "sarathi",
         "replica_scheduler_max_batch_size": batch_size,
-        "vllm_scheduler_max_tokens_in_batch": 16384,
+        "sarathi_scheduler_chunk_size": 2097152,
+        "vllm_scheduler_max_tokens_in_batch": 2097152,
         
         # metrics config
         "metrics_store_enable_op_level_metrics": False,
@@ -82,7 +85,7 @@ def run_benchmark(
     model: str = "01-ai/Yi-6B-200k",
     attn_backend: str = "fa_vattn",
     batch_size: int = 8,
-    upgrade_time: float = 7,  
+    upgrade_time: float = 10,  
     base_output_dir: str = "logs/figure_7",
 ) -> None:
     """Run benchmark with upgrade capability"""
@@ -99,7 +102,9 @@ def run_benchmark(
         model=model,
         batch_size=batch_size,
         attn_backend=attn_backend,
-        output_dir=output_dir
+        output_dir=output_dir,
+        tp_degree=4,
+        pp_degree=1
     )
     
     # For now, using same config for upgrade
@@ -107,7 +112,9 @@ def run_benchmark(
         model=model,
         batch_size=batch_size,
         attn_backend=attn_backend,
-        output_dir=output_dir
+        output_dir=output_dir,
+        tp_degree=4,
+        pp_degree=1
     )
     
     print("\n=====================================================================================")
@@ -127,9 +134,10 @@ def run_benchmark(
 def main():
     """Main function to run benchmarks"""
     # Configuration variables
-    models = ["01-ai/Yi-6B-200k"]  # Can be expanded to ["yi-6b", "llama-3-8b", "yi-34b"]
+    # models = ["01-ai/Yi-6B-200k"]  # Can be expanded to ["yi-6b", "llama-3-8b", "yi-34b"]
+    models = ["01-ai/Yi-Coder-1.5B"]
     attn_backends = ["fa_vattn"]  # Can be expanded to ["fa_paged", "fi_paged", "fa_vattn"]
-    batch_sizes = [8]  # Can be expanded to [1, 2, 4, 8, 12, 16, 32]
+    batch_sizes = [32]  # Can be expanded to [1, 2, 4, 8, 12, 16, 32]
     
     # Run experiments
     for model in models:
@@ -139,7 +147,7 @@ def main():
                     model=model,
                     attn_backend=attn_backend,
                     batch_size=bs,
-                    upgrade_time=7,  
+                    upgrade_time=20,  
                     base_output_dir="logs/figure_7"
                 )
 

@@ -34,6 +34,9 @@ class VLLMScheduler(BaseScheduler):
     def get_block_space_manager_class(self):
         return vAttentionBlockSpaceManager if is_vattention_backend() else VLLMBlockSpaceManager 
 
+    def _schedule_upgrade(self) -> SchedulerOutputs:
+        pass
+    
     def _schedule(self) -> SchedulerOutputs:
         # Fix the current time.
         now = time.monotonic()

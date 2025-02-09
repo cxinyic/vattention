@@ -224,6 +224,7 @@ public:
         {
             CUdeviceptr kcache_ptr = reinterpret_cast<CUdeviceptr>(k_tensors[0].data_ptr());
             CUdeviceptr vcache_ptr = reinterpret_cast<CUdeviceptr>(v_tensors[0].data_ptr());
+            log.log("unmapping page for reqId: " + std::to_string(reqId));
             UNMAP_PAGES(reqId, 0, req_offset, kcache_ptr, vcache_ptr, page_size);
             dec_req_page_count(reqId);
         }
@@ -234,6 +235,7 @@ public:
             {
                 CUdeviceptr kcache_ptr = reinterpret_cast<CUdeviceptr>(k_tensors[layer_idx].data_ptr());
                 CUdeviceptr vcache_ptr = reinterpret_cast<CUdeviceptr>(v_tensors[layer_idx].data_ptr());
+                log.log("unmapping page for reqId: " + std::to_string(reqId) + " layer: " + std::to_string(layer_idx));
                 UNMAP_PAGES(reqId, layer_idx, req_offset, kcache_ptr, vcache_ptr, page_size);
             }
             dec_req_page_count(reqId);
@@ -248,7 +250,58 @@ public:
 
     inline void release_kvcache_pages_all(int reqId)
     {
+        log.log("releasing all pages for reqId: " + std::to_string(reqId));
         release_kvcache_pages_some(reqId, 0);
+    }
+
+    inline void free_cuda_pages_some(int reqId, u64 retain_blocks)
+    {
+        while (get_req_pages(reqId) > retain_blocks) {
+            u64 req_offset = get_req_current_unmap_offset(reqId);
+            if (megacache_enabled) {
+                CUdeviceptr kcache_ptr = reinterpret_cast<CUdeviceptr>(k_tensors[0].data_ptr());
+                CUdeviceptr vcache_ptr = reinterpret_cast<CUdeviceptr>(v_tensors[0].data_ptr());
+                UNMAP_AND_RELEASE_PAGES(reqId, 0, req_offset, kcache_ptr, vcache_ptr, page_size);
+                dec_req_page_count(reqId);
+            } else {
+                for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+                    CUdeviceptr kcache_ptr = reinterpret_cast<CUdeviceptr>(k_tensors[layer_idx].data_ptr());
+                    CUdeviceptr vcache_ptr = reinterpret_cast<CUdeviceptr>(v_tensors[layer_idx].data_ptr());
+                    UNMAP_AND_RELEASE_PAGES(reqId, layer_idx, req_offset, kcache_ptr, vcache_ptr, page_size);
+                }
+                dec_req_page_count(reqId);
+            }
+        }
+    }
+
+    inline void free_cuda_physical_memory_for_request(int reqId)
+    {
+        log.log("Freeing CUDA physical memory for reqId: " + std::to_string(reqId));
+        
+        // Count pages before freeing for logging
+        u64 num_pages = get_req_pages(reqId);
+        log.log("About to free " + std::to_string(num_pages) + " pages for reqId: " + std::to_string(reqId));
+        
+        // Unmap and release all pages
+        free_cuda_pages_some(reqId, 0);
+        
+        // Clean up tensor memory for this request
+        // if (megacache_enabled) {
+        //     // For megacache, zero out the memory for this request in the combined tensors
+        //     k_tensors[0].index_put_({reqId}, torch::zeros_like(k_tensors[0][reqId]));
+        //     v_tensors[0].index_put_({reqId}, torch::zeros_like(v_tensors[0][reqId]));
+        // } else {
+        //     // For regular mode, zero out the memory in each layer
+        //     for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+        //         k_tensors[layer_idx].index_put_({reqId}, torch::zeros_like(k_tensors[layer_idx][reqId]));
+        //         v_tensors[layer_idx].index_put_({reqId}, torch::zeros_like(v_tensors[layer_idx][reqId]));
+        //     }
+        // }
+        
+        // Ensure mapped_pages is zeroed for this request
+        mapped_pages[reqId] = 0;
+        
+        log.log("Freed all CUDA physical memory for reqId: " + std::to_string(reqId));
     }
 
     inline bool is_valid_offset(int reqId, u64 req_offset, bool sync)
@@ -590,6 +643,7 @@ public:
 
     void free_batch_idx(int reqId)
     {
+        log.log("freeing reqId: " + std::to_string(reqId));
         set_req_seq_length(reqId, 0);
     }
 
@@ -634,4 +688,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("alloc_new_batch_idx", &alloc_new_batch_idx, "allocate a request id...");
     m.def("free_batch_idx", &free_batch_idx, "free a request id...");
     m.def("num_free_kvblocks", &num_free_kvblocks, "number of free kv blocks...");
+    m.def("free_cuda_physical_memory_for_request", &free_cuda_physical_memory_for_request, "release all pages for a request...");
 }

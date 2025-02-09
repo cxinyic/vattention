@@ -50,6 +50,8 @@ class BaseScheduler(ABC):
         # Sequence groups in the RUNNING state.
         self.running: List[Sequence] = []
 
+        self._during_upgrade = False
+
     def set_block_manager(self, model_config):
         attn_cfg = model_config.attention_backend
         self.attention_backend = attn_cfg
@@ -80,9 +82,16 @@ class BaseScheduler(ABC):
 
     def get_num_unfinished_seqs(self) -> int:
         return len(self.waiting) + len(self.running)
+    
+    def set_upgrade(self) -> None:
+        self._during_upgrade = True
 
     @abstractmethod
     def _schedule(self) -> SchedulerOutputs:
+        pass
+
+    @abstractmethod
+    def _schedule_upgrade(self) -> SchedulerOutputs:
         pass
 
     def schedule(self) -> SchedulerOutputs:
@@ -98,8 +107,14 @@ class BaseScheduler(ABC):
                 preempted_seq_ids=[],
                 scheduled_seq_metadata_list=[],
             )
+        
+        scheduler_outputs = None
 
-        scheduler_outputs = self._schedule()
+        if not self._during_upgrade:
+            scheduler_outputs = self._schedule()
+        else:
+            scheduler_outputs = self._schedule_upgrade()
+        
 
         if not scheduler_outputs.is_empty():
             self.num_running_batches += 1
@@ -153,3 +168,17 @@ class BaseScheduler(ABC):
             return False
 
         return True
+    
+    def select_sequences_for_preemption(self, required_blocks: int) -> List[Sequence]:
+        """
+        Select sequences to preempt based on required blocks.
+        This is the base implementation that can be overridden by specific schedulers.
+        
+        Args:
+            required_blocks: Number of blocks that need to be freed
+            
+        Returns:
+            List[Sequence]: List of sequences selected for preemption
+        """
+        pass
+

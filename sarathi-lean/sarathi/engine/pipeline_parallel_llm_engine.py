@@ -115,7 +115,9 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
             self.schedule_event.clear()
 
             start_time = time.perf_counter()
-
+            outputs = self._run_workers("get_free_blocks" ,get_all_outputs=True)
+            self.scheduler.block_manager.set_free_blocks(min(outputs))
+            # logger.info(f"Free blocks: {outputs}")
             scheduler_outputs = self.scheduler.schedule()
 
             if scheduler_outputs.has_no_output():

@@ -49,6 +49,10 @@ class SarathiScheduler(BaseScheduler):
             self._tokens_per_stage = int(
                 np.ceil(self.chunk_schedule_max_tokens / self.chunk_schedule_stages)
             )
+        
+        # upgrade mode only
+        self.upgrade_preempted_seq_ids = set()  # Track sequences preempted for upgrade
+        self.upgrade_required_blocks = 0  # Track blocks needed for upgrade
 
     def _compute_chunk_size_schedule(self):
         # create num_steps equally spaced chunk sizes between low_chunk_size and high_chunk_size
@@ -155,7 +159,6 @@ class SarathiScheduler(BaseScheduler):
                 #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks - self.block_manager.promised_blocks} required blocks {self.block_manager.get_num_blocks(seq)}")
                 # elif type(self.block_manager) == SarathiBlockSpaceManager:
                 #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
-
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq = self.running.pop(-1)
@@ -275,10 +278,251 @@ class SarathiScheduler(BaseScheduler):
         # make sure that prefills are at the start of the batch, so that we don't violate assumptions
         # made in the original vllm codebase
         self.running = running
-
         return SchedulerOutputs(
             id=self._iteration_id,
             ignored_seq_ids=ignored_seq_ids,
             preempted_seq_ids=preempted_seq_ids,
             scheduled_seq_metadata_list=scheduled_seq_metadata_list,
         )
+
+    def _schedule_upgrade(self) -> SchedulerOutputs:
+        # Fix the current time.
+        now = time.monotonic()
+
+        running: List[Sequence] = []
+        ignored_seq_ids: List[int] = []
+        preempted_seq_ids: List[int] = []
+        scheduled_seq_metadata_list: List[SequenceScheduleMetadata] = []
+
+        num_batched_tokens: int = 0
+        batch_contains_prefill: bool = False
+        # Filter out upgrade-preempted sequences from running queue
+        filtered_running = []
+        for seq in self.running:
+            if seq.seq_id in self.upgrade_preempted_seq_ids:
+                preempted_seq_ids.append(seq.seq_id)
+                continue
+            filtered_running.append(seq)
+        self.running = filtered_running
+        logger.info(f"upgrade before: filtered_running sequences length: {len(filtered_running)}")
+
+        if type(self.block_manager) == vAttentionBlockSpaceManager:
+            original_free_blocks = self.block_manager.free_blocks
+            self.block_manager.set_free_blocks(original_free_blocks - self.upgrade_required_blocks)
+            self.block_manager.clear_promised_blocks()
+        ######################################################################
+        # Phase 1: Add existing running sequence groups to the batch.
+        # There are two cases:
+        # 1. The sequence group has incomplete prefill. The routine
+        # remains identical to the one in sarathi scheduler for such sequences.
+        # 2. The sequence group has completed prefill. In this case, we need to
+        # check for memory availability for the next chunk of decode tokens, and preempt
+        # some sequence groups if necessary. Note that, the preempted sequence groups
+        # might belong to either of the two categories.
+        ######################################################################
+
+        # NOTE(woosuk): Preemption happens only when there is no available slot
+        # to keep all the sequence groups in the RUNNING state.
+        # In this case, the policy is responsible for deciding which sequence
+        # groups to preempt.
+        self.running = self.policy.sort_by_priority(now, self.running)
+
+        # in first pass process all the requests with prefill completed
+        # this allows us to accurately account for the number of decode tokens
+        running_prefills: List[Sequence] = []
+
+        while self.running:
+            seq = self.running.pop(0)
+
+            if not seq.is_paused():
+                running.append(seq)
+                continue
+
+            if not seq.prompt_processing_finished:
+                running_prefills.append(seq)
+                continue
+
+            while not self.block_manager.can_append_slot():
+                # print(f" [Sarathi] [{type(self.block_manager)}] : Cannot append seq {seq.seq_id} with {seq.get_len()} tokens")
+                # if type(self.block_manager) == vAttentionBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks - self.block_manager.promised_blocks} required blocks {self.block_manager.get_num_blocks(seq)}")
+                # elif type(self.block_manager) == SarathiBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
+                logger.info("Cannot append slot")
+                if self.running:
+                    # Preempt the lowest-priority sequence groups.
+                    victim_seq = self.running.pop(-1)
+                    self._preempt(victim_seq)
+                    preempted_seq_ids.append(victim_seq.seq_id)
+                else:
+                    # No other sequence groups can be preempted.
+                    # Preempt the current sequence group.
+                    self._preempt(seq)
+                    preempted_seq_ids.append(seq.seq_id)
+                    break
+            else:
+                # Append new slots to the sequence group.
+                # print(f" [Sarathi] [{type(self.block_manager)}] : Can append seq {seq.seq_id} with {seq.get_len()} tokens")
+                # if type(self.block_manager) == vAttentionBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks - self.block_manager.promised_blocks} required blocks {self.block_manager.get_num_blocks(seq)}")
+                # elif type(self.block_manager) == SarathiBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
+
+                self._append_slot(seq)
+                running.append(seq)
+                num_batched_tokens += 1
+                scheduled_seq_metadata_list.append(
+                    SequenceScheduleMetadata.from_sequence(seq)
+                )
+
+        # now add the requests with prefill incomplete
+        # the memory for all these prefills has already been allocated
+        # so we should be able to run all of them
+        for seq in running_prefills:
+            assert not seq.prompt_processing_finished
+
+            next_num_prefill_tokens = self._get_seq_next_num_prefill_tokens(
+                seq, batch_contains_prefill, num_batched_tokens
+            )
+
+            # as long as the request could fit in the batch previously
+            # it should be able to fit in the batch now
+            # so in non-pipeline case this condition should always be false
+            # however, in pipeline case, the grouping of requests can change
+            # between different microbatches, so this is not guaranteed to be always true
+            if next_num_prefill_tokens == 0:
+                running.append(seq)
+                continue
+            
+            batch_contains_prefill = True
+            num_batched_tokens += next_num_prefill_tokens
+            scheduled_seq_metadata_list.append(
+                SequenceScheduleMetadata.from_sequence(
+                    seq, prompt_chunk_len=next_num_prefill_tokens
+                )
+            )
+            running.append(seq)
+
+        ######################################################################
+        # Phase 2: Add waiting (new) sequence groups to the batch.
+        # This routine is nearly-identical to the one in sarathi scheduler
+        ######################################################################
+        # Optimization: We do not sort the waiting queue since the preempted
+        # sequence groups are added to the front and the new sequence groups
+        # are added to the back.
+        while self.waiting:
+            seq = self.waiting[0]
+            if seq.seq_id in self.upgrade_preempted_seq_ids:
+                self.waiting.pop(0)
+                preempted_seq_ids.append(seq.seq_id)
+                continue
+
+            # This is required to handle benchmarking where we set request arrival time ahead of time
+            if seq.arrival_time > now:
+                break
+
+            if not self._check_request_prompt_length(seq):
+                ignored_seq_ids.append(seq.seq_id)
+                continue
+
+            # If the sequence group cannot be allocated, stop.
+            # print("[SarahtiScheduler] Allocating sequence group", seq.seq_id, " with prompt len ", seq.get_prompt_len())
+            if not self.block_manager.can_allocate(seq):
+                # this is different from vllm scheduler
+                # even if we cannot allocate this sequence group
+                # there might be other sequence groups that can be allocated
+                # if type(self.block_manager) == vAttentionBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks}, promised: {self.block_manager.promised_blocks}, actual free blocks: {self.block_manager.free_blocks}, required blocks {self.block_manager.get_num_blocks(seq)}")
+                # elif type(self.block_manager) == SarathiBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
+                # print(f" [Sarathi] [{type(self.block_manager)}] : Cannot allocate seq {seq.seq_id} with {seq.get_len()} tokens")
+                
+                break
+            # else:
+                # print(f" [Sarathi] [{type(self.block_manager)}] : Can allocate seq {seq.seq_id} with {seq.get_len()} tokens")
+                # if type(self.block_manager) == vAttentionBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks - self.block_manager.promised_blocks} required blocks {self.block_manager.get_num_blocks(seq)}")
+                # elif type(self.block_manager) == SarathiBlockSpaceManager:
+                #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
+
+            # The total number of sequences in the RUNNING state should not
+            # exceed the maximum number of sequences.
+            if len(running) >= self.scheduler_config.max_num_seqs:
+                break
+
+            # check if we can fit the prefill in the batch
+            next_num_prefill_tokens = self._get_seq_next_num_prefill_tokens(
+                seq, batch_contains_prefill, num_batched_tokens
+            )
+
+            if next_num_prefill_tokens == 0:
+                break
+
+            seq = self.waiting.pop(0)
+            self._allocate(seq)
+            batch_contains_prefill = True
+            num_batched_tokens += next_num_prefill_tokens
+            scheduled_seq_metadata_list.append(
+                SequenceScheduleMetadata.from_sequence(
+                    seq, prompt_chunk_len=next_num_prefill_tokens
+                )
+            )
+            running.append(seq)
+
+        # make sure that prefills are at the start of the batch, so that we don't violate assumptions
+        # made in the original vllm codebase
+        self.running = running
+        logger.info(f"upgrade: running sequences length: {len(self.running)}")
+        for seq in self.running:
+            logger.info(f"upgrade: running sequence: {seq.seq_id}")
+        return SchedulerOutputs(
+            id=self._iteration_id,
+            ignored_seq_ids=ignored_seq_ids,
+            preempted_seq_ids=preempted_seq_ids,
+            scheduled_seq_metadata_list=scheduled_seq_metadata_list,
+        )
+    
+    def select_sequences_for_preemption(self, required_blocks: int) -> List[Sequence]:
+        """
+        Select sequences to preempt for upgrade.
+        TODO(XY): Prioritizes:
+        1. Newest sequences (least progress made)
+        2. Sequences that haven't started decoding
+        3. Sequences that would free up the most blocks
+        """
+        self.upgrade_required_blocks = required_blocks
+        if required_blocks <= 0:
+            return []
+
+        freed_blocks = 0
+        sequences_to_preempt = []
+        
+        # Only consider running sequences since waiting ones don't have KV-cache allocated
+        running_sequences = sorted(
+            self.running,
+            key=lambda seq: seq.arrival_time,
+            reverse=True  # newest first
+        )
+        required_blocks += 5  # Add a buffer to avoid preempting too many sequences
+
+        logger.info(f"running sequences length: {len(running_sequences)}")
+
+        for seq in running_sequences:
+            if freed_blocks >= required_blocks:
+                break
+                
+            # Calculate blocks used by this sequence
+            if type(self.block_manager) == vAttentionBlockSpaceManager:
+                seq_blocks = self.block_manager.get_num_blocks(seq)
+            else:
+                logger.error("Incorrect block manager type for upgrade")
+                return []
+
+            freed_blocks += seq_blocks
+            sequences_to_preempt.append(seq)
+            logger.info(f"Selected sequence {seq.seq_id} for preemption, frees {seq_blocks} blocks")
+
+        logger.info(f"Total blocks freed: {freed_blocks}, required: {required_blocks}")
+
+        self.upgrade_preempted_seq_ids.update(seq.seq_id for seq in sequences_to_preempt)
+        return sequences_to_preempt

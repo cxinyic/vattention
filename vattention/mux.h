@@ -65,6 +65,27 @@ static inline u64 get_num_free_pages(u64 page_size) {
         } \
     } while (0)
 
+#define UNMAP_AND_RELEASE_PAGES(reqId, layer_idx, req_offset, kcache_ptr, vcache_ptr, page_size) \
+    do { \
+        if (!is_uvm_backend(page_size)) { \
+            /* First unmap the virtual memory */ \
+            CHECK_CUDA(cuMemUnmap(kcache_ptr + req_offset, page_size)); \
+            CHECK_CUDA(cuMemUnmap(vcache_ptr + req_offset, page_size)); \
+            /* Get the physical pages from pagemap */ \
+            std::pair pages = cuda_pagemap[std::make_tuple(reqId, req_offset, layer_idx)]; \
+            /* Release the physical pages back to CUDA */ \
+            CHECK_CUDA(cuMemRelease(pages.first)); \
+            CHECK_CUDA(cuMemRelease(pages.second)); \
+            /* Remove from pagemap - don't add back to cuda_pages */ \
+            cuda_pagemap.erase(std::make_tuple(reqId, layer_idx, req_offset)); \
+        } else { \
+            std::pair pages = uvm_pagemap[std::make_tuple(reqId, req_offset, layer_idx)]; \
+            uvm_pages.push_back(pages.first); \
+            uvm_pages.push_back(pages.second); \
+            uvm_pagemap.erase(std::make_tuple(reqId, req_offset, layer_idx)); \
+        } \
+    } while (0)
+
 #define MAP_COMMON_PAGES(layer_idx, kcache_ptr, vcache_ptr, page_size) \
     do { \
         if (!is_uvm_backend(page_size)) { \

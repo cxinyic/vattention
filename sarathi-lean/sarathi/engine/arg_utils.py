@@ -69,6 +69,7 @@ class EngineArgs:
     enable_request_outputs: bool = False
     keep_individual_batch_metrics: bool = False
     attention_backend: str = "flash_attention"
+    upgrade_engine_type: str = "old"
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -127,7 +128,7 @@ class EngineArgs:
     def create_engine_configs(
         self,
     ) -> Tuple[
-        ModelConfig, CacheConfig, ParallelConfig, BaseSchedulerConfig, MetricsConfig
+        ModelConfig, CacheConfig, ParallelConfig, BaseSchedulerConfig, MetricsConfig, str
     ]:
         model_config = ModelConfig(
             model=self.model,
@@ -194,4 +195,5 @@ class EngineArgs:
             parallel_config,
             scheduler_config,
             metrics_config,
+            self.upgrade_engine_type,
         )

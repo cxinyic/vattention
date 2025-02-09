@@ -45,8 +45,20 @@ def in_wsl() -> bool:
     return "microsoft" in " ".join(uname()).lower()
 
 
+# def get_ip() -> str:
+#     return socket.gethostbyname(socket.gethostname())
+
 def get_ip() -> str:
-    return socket.gethostbyname(socket.gethostname())
+    try:
+        # Create a dummy connection to get the default route
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        # Fallback to the original method
+        return socket.gethostbyname(socket.gethostname())
 
 
 def get_open_port() -> int:

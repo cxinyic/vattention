@@ -142,9 +142,22 @@ class vATTNCacheEngine(BaseCacheEngine):
         self.seq_to_batch_idx[seq_id] = new_batch_idx
         return new_batch_idx
 
-    def free_request(self, seq_id: int) -> None:
+    def free_request(self, seq_id: int, force_release: bool = False) -> None:
+        """
+        Free a request's allocated resources.
+        
+        Args:
+            seq_id: The sequence ID to free
+            force_release: If True, immediately release all pages instead of just marking for reclamation
+        """
         if seq_id in self.seq_to_batch_idx:
+            vattention.set_verbose(True)
             batch_idx = self.seq_to_batch_idx[seq_id]
+            if force_release:
+                # Directly unmap all pages for this request
+                logger.info(f"Releasing all pages for seq_id {seq_id}")
+                vattention.free_cuda_physical_memory_for_request(batch_idx)
+            # Then do the normal cleanup
             vattention.free_batch_idx(batch_idx)
             self.seq_to_batch_idx.pop(seq_id)
             self.curr_seq_lens[batch_idx] = 0
@@ -184,6 +197,8 @@ class vATTNCacheEngine(BaseCacheEngine):
         value_cache_block = key_cache_block
         total = num_layers * (key_cache_block + value_cache_block)
         dtype_size = _get_dtype_size(model_config.dtype)
+        # logger.info(f"head_size: {head_size}, num_heads: {num_heads}, num_layers: {num_layers}, dtype_size: {dtype_size}, block_size: {block_size}")
+        # logger.info(f"key_cache_block: {key_cache_block}, value_cache_block: {value_cache_block}, total: {total}")
         return dtype_size * total
 
     def cleanup_kvcache(self):

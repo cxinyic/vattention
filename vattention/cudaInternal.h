@@ -88,7 +88,7 @@ void do_cuda_kvcache_cleanup() {
         CHECK_CUDA(cuMemAddressFree(reinterpret_cast<CUdeviceptr>(k_tensors[i].data_ptr()), virt_buff_size));
         CHECK_CUDA(cuMemAddressFree(reinterpret_cast<CUdeviceptr>(v_tensors[i].data_ptr()), virt_buff_size));
     }
-
+    
     for(int i = 0; i < cuda_pages.size(); i++)
         CHECK_CUDA(cuMemRelease(cuda_pages[i]));
 }

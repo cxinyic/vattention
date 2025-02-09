@@ -30,6 +30,7 @@ from sarathi.model_executor.parallel_utils.parallel_state import (
 from sarathi.utils.threading_utils import synchronized
 from sarathi.worker.cache_engine import get_cache_engine
 from sarathi.worker.cache_engine import get_cache_mem_alloc_backend
+import ray
 
 logger = init_logger(__name__)
 
@@ -92,10 +93,14 @@ class BaseWorker:
 
         # This env var set by Ray causes exceptions with graph building.
         os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
-
-        logger.info(f"Worker {self.rank} is using device {self.local_rank}")
-        self.device = torch.device(f"cuda:{self.local_rank}")
-        torch.cuda.set_device(self.device)
+        ray_resources = ray.get_runtime_context().get_assigned_resources()
+        logger.info(f"Worker {self.rank}  - Ray assigned resources: {ray_resources}")
+        self.device = torch.device(f"cuda:0")
+            
+        # Try setting the device
+        logger.info(f"Worker {self.rank} - Attempting to set device to: {self.rank}")
+        torch.cuda.synchronize()
+        torch.cuda.set_device(0)
 
         # Initialize the distributed environment.
         _init_distributed_environment(
@@ -249,7 +254,21 @@ class BaseWorker:
     @synchronized
     def cleanup(self) -> None:
         self.cache_engine.cleanup_kvcache()
+    
+    @synchronized
+    def release_sequences_kv(self, sequences: List[Sequence]) -> None:
+        """
+        Unmap a sequence from the KV cache.
+        
+        Args:
+            sequence: The sequence to unmap from cache
+            
+        """  
+        # Force release all pages back to cuda for the sequences
+        for sequence in sequences:
+            self.cache_engine.free_request(sequence.seq_id, force_release=True)
 
+    
 def _init_distributed_environment(
     parallel_config: ParallelConfig,
     rank: int,
@@ -282,3 +301,6 @@ def _init_distributed_environment(
     initialize_model_parallel(
         parallel_config.tensor_parallel_size, parallel_config.pipeline_parallel_size
     )
+
+    
+
