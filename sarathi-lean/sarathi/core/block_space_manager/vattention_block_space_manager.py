@@ -5,7 +5,8 @@ import vattention
 from sarathi.worker.cache_engine import get_cache_engine
 from sarathi.model_executor.attention import get_attn_type
 import math
-
+from sarathi.logger import init_logger
+logger = init_logger(__name__)
 class vAttentionBlockSpaceManager():
 
     def __init__(self, 
@@ -39,6 +40,7 @@ class vAttentionBlockSpaceManager():
         #     return True
         num_required_blocks = self.get_num_blocks(seq)
         num_free_gpu_blocks = self.free_blocks
+        # logger.info(f"num_free_gpu_blocks: {num_free_gpu_blocks} num_required_blocks: {num_required_blocks} self.promised_blocks: {self.promised_blocks} self.watermark_blocks: {self.watermark_blocks}")
         # print("num_free_gpu_blocks: ", num_free_gpu_blocks, " num_required_blocks: ", num_required_blocks, " self.promised_blocks: ", self.promised_blocks, " self.watermark_blocks: ", self.watermark_blocks)
         return num_free_gpu_blocks - self.promised_blocks - num_required_blocks >= self.watermark_blocks
 
@@ -93,7 +95,7 @@ class vAttentionBlockSpaceManager():
     def is_allocated(self, seq: Sequence) -> bool:
         return seq.seq_id in self.active_requests
     
-    def get_num_free_gpu_blocks(self, seq: Sequence) -> int:
+    def get_num_free_gpu_blocks(self) -> int:
         return self.free_blocks
 
 

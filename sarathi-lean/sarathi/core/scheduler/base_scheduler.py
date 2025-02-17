@@ -76,6 +76,7 @@ class BaseScheduler(ABC):
     def add_seq(self, seq: Sequence) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq)
+        # logger.info(f"self.waiting {len(self.waiting)}")
 
     def has_unfinished_seqs(self) -> bool:
         return self.waiting or self.running
@@ -109,11 +110,11 @@ class BaseScheduler(ABC):
             )
         
         scheduler_outputs = None
-
-        if not self._during_upgrade:
-            scheduler_outputs = self._schedule()
-        else:
-            scheduler_outputs = self._schedule_upgrade()
+        scheduler_outputs = self._schedule()
+        # if not self._during_upgrade:
+        #     scheduler_outputs = self._schedule()
+        # else:
+        #     scheduler_outputs = self._schedule_upgrade()
         
 
         if not scheduler_outputs.is_empty():
@@ -169,16 +170,4 @@ class BaseScheduler(ABC):
 
         return True
     
-    def select_sequences_for_preemption(self, required_blocks: int) -> List[Sequence]:
-        """
-        Select sequences to preempt based on required blocks.
-        This is the base implementation that can be overridden by specific schedulers.
-        
-        Args:
-            required_blocks: Number of blocks that need to be freed
-            
-        Returns:
-            List[Sequence]: List of sequences selected for preemption
-        """
-        pass
 

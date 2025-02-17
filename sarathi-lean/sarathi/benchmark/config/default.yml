@@ -107,3 +107,9 @@ metrics_store:
   enable_cpu_op_level_metrics: false
   enable_request_outputs: false
   keep_individual_batch_metrics: false
+
+upgrade:
+  strategy: no_upgrade  # can be no_upgrade, basic_upgrade, or overlap_upgrade
+  time: 0  # upgrade time in seconds
+  required_blocks: 0  # number of required blocks for upgrade
+  engine_type: old  # engine type (old/new)

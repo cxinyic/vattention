@@ -18,8 +18,11 @@ from sarathi.config import (
     SchedulerType,
     SimpleChunkingSchedulerConfig,
     VLLMSchedulerConfig,
+    UpgradeConfig,
+    UpgradeStrategy,
 )
-
+from sarathi.logger import init_logger
+logger = init_logger(__name__)
 
 @dataclass
 class EngineArgs:
@@ -42,6 +45,7 @@ class EngineArgs:
     block_size: int = 16
     gpu_memory_utilization: float = 0.85
     revision: Optional[str] = None
+    
     # scheduler parameters
     scheduler_type: str = "sarathi"
     max_model_len: Optional[int] = None
@@ -55,6 +59,7 @@ class EngineArgs:
     high_chunk_size: Optional[int] = None
     chunk_schedule_max_tokens: Optional[int] = None
     chunk_schedule_stages: Optional[int] = None
+    
     # Metrics store parameters
     write_metrics: bool = True
     output_dir: str = "."
@@ -69,7 +74,12 @@ class EngineArgs:
     enable_request_outputs: bool = False
     keep_individual_batch_metrics: bool = False
     attention_backend: str = "flash_attention"
-    upgrade_engine_type: str = "old"
+    
+    # Upgrade parameters
+    strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE
+    time: Optional[float] = None
+    required_blocks: int = None
+    engine_type: str = "old"
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -124,12 +134,14 @@ class EngineArgs:
             raise ValueError(f"Unsupported scheduler type: {self.scheduler_type}")
 
         return scheduler_config
-
+    
     def create_engine_configs(
         self,
     ) -> Tuple[
-        ModelConfig, CacheConfig, ParallelConfig, BaseSchedulerConfig, MetricsConfig, str
+        ModelConfig, CacheConfig, ParallelConfig, BaseSchedulerConfig, MetricsConfig, 
+        UpgradeConfig
     ]:
+        logger.info(f"model is {self.model}")
         model_config = ModelConfig(
             model=self.model,
             tokenizer=self.tokenizer,
@@ -165,14 +177,17 @@ class EngineArgs:
             gpu_memory_utilization=self.gpu_memory_utilization,
             max_batch_size=self.max_num_seqs,
         )
+        
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,
             tensor_parallel_size=self.tensor_parallel_size,
             replica_resource_mapping=self.replica_resource_mapping,
         )
+        
         scheduler_config = self._get_scheduler_config(
             model_config=model_config, num_pipeline_stages=self.pipeline_parallel_size
         )
+        
         metrics_config = MetricsConfig(
             replica_id=self.replica_id,
             write_metrics=self.write_metrics,
@@ -189,11 +204,21 @@ class EngineArgs:
             keep_individual_batch_metrics=self.keep_individual_batch_metrics,
             model_num_layers=model_config.get_total_num_layers(),
         )
+        logger.info(f"strategy: {self.strategy}")
+        logger.info(f"upgrade_time: {self.time}")
+        logger.info(f"required_blocks: {self.required_blocks}")
+        upgrade_config = UpgradeConfig(
+            strategy=self.strategy,
+            upgrade_time=self.time,
+            required_blocks=self.required_blocks,
+            engine_type=self.engine_type,
+        )
+
         return (
             model_config,
             cache_config,
             parallel_config,
             scheduler_config,
             metrics_config,
-            self.upgrade_engine_type,
+            upgrade_config,
         )

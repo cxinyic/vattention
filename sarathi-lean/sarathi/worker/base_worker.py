@@ -256,17 +256,12 @@ class BaseWorker:
         self.cache_engine.cleanup_kvcache()
     
     @synchronized
-    def release_sequences_kv(self, sequences: List[Sequence]) -> None:
-        """
-        Unmap a sequence from the KV cache.
-        
-        Args:
-            sequence: The sequence to unmap from cache
-            
-        """  
-        # Force release all pages back to cuda for the sequences
-        for sequence in sequences:
+    def release_sequences_kv(self, sequences_PA: List[Sequence], sequences_VA: List[Sequence]) -> None:
+        for sequence in sequences_PA:
             self.cache_engine.free_request(sequence.seq_id, force_release=True)
+        for sequence in sequences_VA:
+            self.cache_engine.free_request(sequence.seq_id, force_release=False)
+
 
     
 def _init_distributed_environment(

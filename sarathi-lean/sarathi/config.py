@@ -18,6 +18,11 @@ class SchedulerType(BaseIntEnum):
     SARATHI = 4
     SIMPLE_CHUNKING = 5
 
+class UpgradeStrategy(BaseIntEnum):
+    NO_UPGRADE = 1
+    BASIC_UPGRADE = 2
+    DECODE_UPGRADE = 3
+    PREFILL_UPGRADE = 4
 
 class ModelConfig:
     """Configuration for the model.
@@ -442,6 +447,75 @@ class MetricsConfig:
             f"{self.keep_individual_batch_metrics})"
         )
 
+class UpgradeConfig:
+    """Configuration for model upgrade behavior.
+    
+    Args:
+        strategy: Upgrade strategy (NO_UPGRADE, BASIC_UPGRADE, or DECODE_UPGRADE)
+        upgrade_time: Time in seconds after which to trigger upgrade (None if no upgrade)
+        required_blocks: Number of blocks required for preemption during overlap serving
+        engine_type: Type of engine ('old' or 'new') during upgrade process
+    """
+    def __init__(
+        self,
+        strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
+        upgrade_time: float = None,
+        required_blocks: int = 20,
+        engine_type: str = "old",
+    ) -> None:
+        self.strategy = strategy if isinstance(strategy, UpgradeStrategy) else UpgradeStrategy(strategy)
+        self.upgrade_time = upgrade_time
+        self.required_blocks = required_blocks
+        self.engine_type = engine_type
+        self._verify_args()
+    
+    @property
+    def enable_upgrade(self) -> bool:
+        """Whether upgrade is enabled at all"""
+        return self.strategy != UpgradeStrategy.NO_UPGRADE
+    
+    @property
+    def enable_overlap_serving(self) -> bool:
+        """Whether overlap serving is enabled during upgrade"""
+        return self.strategy == UpgradeStrategy.DECODE_UPGRADE
+    
+    def _verify_args(self) -> None:
+        """Verify the arguments."""
+        if not isinstance(self.strategy, UpgradeStrategy):
+            raise ValueError(
+                f"Invalid upgrade strategy: {self.strategy}. "
+                f"Must be one of {[s.name for s in UpgradeStrategy]}"
+            )
+        
+        if self.enable_upgrade:
+            if self.upgrade_time is None:
+                raise ValueError("Upgrade time must be specified when upgrade is enabled")
+            if self.upgrade_time < 0:
+                raise ValueError(
+                    f"Upgrade time must be non-negative. Got {self.upgrade_time}."
+                )
+            
+        if self.enable_overlap_serving:
+            if self.required_blocks < 0:
+                raise ValueError(
+                    f"Required blocks must be non-negative. Got {self.required_blocks}."
+                )
+        
+        if self.engine_type not in ["old", "new"]:
+            raise ValueError(
+                f"Engine type must be either 'old' or 'new'. Got {self.engine_type}."
+            )
+    
+    def __str__(self) -> str:
+        return (
+            f"UpgradeConfig(strategy={self.strategy.name}, "
+            f"upgrade_time={self.upgrade_time}, "
+            f"required_blocks={self.required_blocks}, "
+            f"engine_type={self.engine_type})"
+        )
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 _STR_DTYPE_TO_TORCH_DTYPE = {
     "half": torch.float16,
