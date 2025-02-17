@@ -3,7 +3,9 @@ import time
 from typing import Dict, Any
 
 from sarathi.benchmark.config import Config
+from sarathi.config import UpgradeConfig, UpgradeStrategy
 from sarathi.benchmark.benchmark_runner import BenchmarkRunnerLauncher
+from sarathi.benchmark.latency_tracker import LatencyTracker
 
 def create_config(
     model: str,
@@ -14,6 +16,10 @@ def create_config(
     block_size: int = None,
     tp_degree: int = 4,
     pp_degree: int = 1,
+    upgrade_strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
+    upgrade_required_blocks: int = 20,
+    upgrade_engine_type: str = "old",
+    upgrade_time: float = None,
 ) -> Config:
     """Create benchmark configuration"""
     if block_size is None:
@@ -23,7 +29,7 @@ def create_config(
             block_size = 2097152  # 2MB
         else:
             block_size = 16
-            
+    print(f"upgrade_strategy: {upgrade_strategy}")
     args = {
         # model config
         "model_name": model,
@@ -36,7 +42,7 @@ def create_config(
         "model_load_format": "auto",
         
         # cluster config
-        "cluster_num_replicas": 1,  # Added this
+        "cluster_num_replicas": 1,
         
         # request generator config
         "request_generator_provider": "synthetic",
@@ -77,6 +83,12 @@ def create_config(
         "seed": 42,
         "time_limit": 0,  # 0 means no time limit
         "replica_resource_mapping": None,
+        
+        # upgrade config
+        "upgrade_strategy": upgrade_strategy,
+        "upgrade_required_blocks": upgrade_required_blocks,
+        "upgrade_engine_type": upgrade_engine_type,
+        "upgrade_time": upgrade_time,
     }
     
     return Config(args)
@@ -87,68 +99,105 @@ def run_benchmark(
     batch_size: int = 8,
     upgrade_time: float = 10,  
     base_output_dir: str = "logs/figure_7",
+    upgrade_strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
+    upgrade_required_blocks: int = 20,
 ) -> None:
     """Run benchmark with upgrade capability"""
     
-    # Create output directory
+    # Create output directory with strategy-specific subdirectory
     output_dir = os.path.join(
         base_output_dir,
-        f"model_{model}_bs_{batch_size}_attn_{attn_backend}"
+        f"model_{model}_bs_{batch_size}_attn_{attn_backend}",
+        upgrade_strategy.name.lower()
     )
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Create initial and new configs (same configuration for now)
+    print(f"In run_benchmark, upgrade_strategy: {upgrade_strategy}")
+    # Create initial config with "old" engine type
     initial_config = create_config(
         model=model,
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
         tp_degree=4,
-        pp_degree=1
+        pp_degree=1,
+        upgrade_strategy=upgrade_strategy,
+        upgrade_required_blocks=upgrade_required_blocks,
+        upgrade_engine_type="old",
+        upgrade_time=upgrade_time
     )
     
-    # For now, using same config for upgrade
+    # Create new config with "new" engine type
     new_config = create_config(
         model=model,
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
         tp_degree=4,
-        pp_degree=1
+        pp_degree=1,
+        upgrade_strategy=upgrade_strategy,
+        upgrade_required_blocks=upgrade_required_blocks,
+        upgrade_engine_type="new",
+        upgrade_time=upgrade_time
     )
     
     print("\n=====================================================================================")
     print(f"Running Config ==> Model: {model} Batch Size: {batch_size} Attention Backend: {attn_backend}")
-    print(f"Upgrade Time: {upgrade_time} seconds")
+    print(f"Upgrade Strategy: {upgrade_strategy.name}")
+    if upgrade_strategy != UpgradeStrategy.NO_UPGRADE:
+        print(f"Upgrade Time: {upgrade_time} seconds")
+        print(f"Required Blocks: {upgrade_required_blocks}")
     print("======================================================================================\n")
     
     # Create and run benchmark
     launcher = BenchmarkRunnerLauncher(
         config=initial_config,
-        upgrade_time=upgrade_time,
         new_config=new_config
     )
     
     launcher.run_with_upgrade()
 
 def main():
-    """Main function to run benchmarks"""
+    """Main function to run benchmarks with different configurations"""
     # Configuration variables
-    # models = ["01-ai/Yi-6B-200k"]  # Can be expanded to ["yi-6b", "llama-3-8b", "yi-34b"]
     models = ["01-ai/Yi-Coder-1.5B"]
-    attn_backends = ["fa_vattn"]  # Can be expanded to ["fa_paged", "fi_paged", "fa_vattn"]
-    batch_sizes = [32]  # Can be expanded to [1, 2, 4, 8, 12, 16, 32]
+    attn_backends = ["fa_vattn"]
+    batch_sizes = [32]
     
-    # Run experiments
+    # Run experiments with all upgrade strategies
     for model in models:
         for attn_backend in attn_backends:
             for bs in batch_sizes:
+                # Run with overlap upgrade
+
+                # run_benchmark(
+                #     model=model,
+                #     attn_backend=attn_backend,
+                #     batch_size=bs,
+                #     upgrade_time=None,
+                #     base_output_dir="logs/figure_7",
+                #     upgrade_strategy=UpgradeStrategy.NO_UPGRADE
+                # )
+                
+                # Run with basic upgrade (no overlap)
+                # run_benchmark(
+                #     model=model,
+                #     attn_backend=attn_backend,
+                #     batch_size=bs,
+                #     upgrade_time=40,
+                #     base_output_dir="logs/figure_7",
+                #     upgrade_strategy=UpgradeStrategy.BASIC_UPGRADE,
+                #     upgrade_required_blocks=20
+                # )
+                
+                # # Run with overlap upgrade
                 run_benchmark(
                     model=model,
                     attn_backend=attn_backend,
                     batch_size=bs,
-                    upgrade_time=20,  
-                    base_output_dir="logs/figure_7"
+                    upgrade_time=40,
+                    base_output_dir="logs/figure_7",
+                    upgrade_strategy=UpgradeStrategy.DECODE_UPGRADE,
+                    upgrade_required_blocks=20
                 )
 
 if __name__ == "__main__":

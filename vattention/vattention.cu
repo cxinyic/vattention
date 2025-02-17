@@ -224,7 +224,6 @@ public:
         {
             CUdeviceptr kcache_ptr = reinterpret_cast<CUdeviceptr>(k_tensors[0].data_ptr());
             CUdeviceptr vcache_ptr = reinterpret_cast<CUdeviceptr>(v_tensors[0].data_ptr());
-            log.log("unmapping page for reqId: " + std::to_string(reqId));
             UNMAP_PAGES(reqId, 0, req_offset, kcache_ptr, vcache_ptr, page_size);
             dec_req_page_count(reqId);
         }
@@ -235,7 +234,6 @@ public:
             {
                 CUdeviceptr kcache_ptr = reinterpret_cast<CUdeviceptr>(k_tensors[layer_idx].data_ptr());
                 CUdeviceptr vcache_ptr = reinterpret_cast<CUdeviceptr>(v_tensors[layer_idx].data_ptr());
-                log.log("unmapping page for reqId: " + std::to_string(reqId) + " layer: " + std::to_string(layer_idx));
                 UNMAP_PAGES(reqId, layer_idx, req_offset, kcache_ptr, vcache_ptr, page_size);
             }
             dec_req_page_count(reqId);

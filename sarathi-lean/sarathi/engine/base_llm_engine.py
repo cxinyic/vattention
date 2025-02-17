@@ -28,6 +28,7 @@ from sarathi.model_executor.attention import AttentionBackend
 from sarathi.core.block_space_manager.vattention_block_space_manager import (
     vAttentionBlockSpaceManager
 )
+from sarathi.config import UpgradeConfig, UpgradeStrategy
 import torch
 
 logger = init_logger(__name__)
@@ -70,11 +71,9 @@ class BaseLLMEngine:
         parallel_config: ParallelConfig,
         scheduler_config: BaseSchedulerConfig,
         metrics_config: MetricsConfig,
-        upgrade_engine_type: str = "old",  # "old" or "new", defaults to "old" (This is just for upgrade mode)
+        upgrade_config: UpgradeConfig,  # Changed from upgrade_engine_type to upgrade_config
     ) -> None:
-        assert upgrade_engine_type in ["old", "new"], f"Engine upgrade type must be 'old' or 'new', got {upgrade_engine_type}"
-        self.upgrade_engine_type = upgrade_engine_type
-
+        
         logger.info(
             "Initializing an LLM engine with config: "
             f"model={model_config.model!r}, "
@@ -97,7 +96,18 @@ class BaseLLMEngine:
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.metrics_config = metrics_config
+        self.upgrade_config = upgrade_config  # Store the entire upgrade config
         self._verify_args()
+
+        # Extract engine_type from upgrade_config
+        self.upgrade_engine_type = upgrade_config.engine_type
+        logger.info(f"Engine upgrade type: {self.upgrade_engine_type}, upgrade strategy: {self.upgrade_config.strategy}")
+        # For the basic upgrade strategy, the new engine is the same with the old engine
+        if self.upgrade_config.strategy == UpgradeStrategy.BASIC_UPGRADE and self.upgrade_engine_type == "new":
+            self.upgrade_engine_type = "old"
+        assert self.upgrade_engine_type in ["old", "new"], (
+            f"Engine upgrade type must be 'old' or 'new', got {self.upgrade_engine_type}"
+        )
 
         # only used for upgrade mode
         self.preempted_sequences = []
@@ -537,26 +547,26 @@ class BaseLLMEngine:
     def cleanup(self) -> None:
         self._run_workers("cleanup")
     
-    def prepare_for_upgrade(self, required_blocks: int):
+    def prepare_for_decode_upgrade(self, required_blocks: int):
         """
         Prepare for upgrade by selecting and preempting sequences.
         Args:
             required_blocks: Number of blocks needed for new model weights
         """
         if self.upgrade_engine_type != "old":
-            logger.warning("prepare_for_upgrade called on non-old engine")
+            logger.warning("prepare_for_decode_upgrade called on non-old engine")
             return
 
         logger.info(f"Preparing for upgrade, need to free {required_blocks} blocks")
 
         # 1. Tell block manager to select sequences to preempt
         if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
-            sequences_to_preempt = self.scheduler.select_sequences_for_preemption(required_blocks)
+            sequences_for_physical_free, _ = self.scheduler.select_preemption_sequences(required_blocks, "partial")
         else:
             logger.error("Incorrect block manager type for upgrade")
             return
 
-        logger.info(f"Selected {len(sequences_to_preempt)} sequences for preemption")
+        logger.info(f"Selected {len(sequences_for_physical_free)} sequences for preemption")
 
         free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()
         logger.info(f"Free CUDA memory before unmapping: {free_memory / (1024**3):.2f} GB")
@@ -564,12 +574,37 @@ class BaseLLMEngine:
         # 2. release the kv memory for the selected sequences
         self._run_workers(
             "release_sequences_kv",
-            sequences=sequences_to_preempt,
+            sequences_PA=sequences_for_physical_free,
+            sequences_VA=[],
             get_all_outputs=True
         )
         logger.info("Unmapped sequences from vattention")
+    
+    def prepare_for_prefill_upgrade(self, required_blocks: int):
+        """
+        Prepare for upgrade by selecting and preempting sequences.
+        Args:
+            required_blocks: Number of blocks needed for new model weights
+        """
+        if self.upgrade_engine_type != "old":
+            logger.warning("prepare_for_prefill_upgrade called on non-old engine")
+            return
 
-        # Store for handover
-        self.preempted_sequences = sequences_to_preempt
+        logger.info(f"Preparing for upgrade, need to free {required_blocks} blocks")
 
-        return sequences_to_preempt
+        # 1. Tell block manager to select sequences to preempt
+        if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
+            sequences_for_physical_free, sequences_for_virtual_free = self.scheduler.select_preemption_sequences(required_blocks, "full")
+        else:
+            logger.error("Incorrect block manager type for upgrade")
+            return
+
+
+        # 2. release the kv memory for the selected sequences
+        self._run_workers(
+            "release_sequences_kv",
+            sequences_PA=sequences_for_physical_free,
+            sequences_VA=sequences_for_virtual_free,
+            get_all_outputs=True
+        )
+        logger.info("Unmapped sequences from vattention")
