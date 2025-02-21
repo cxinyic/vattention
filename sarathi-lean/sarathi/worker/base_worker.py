@@ -31,6 +31,7 @@ from sarathi.utils.threading_utils import synchronized
 from sarathi.worker.cache_engine import get_cache_engine
 from sarathi.worker.cache_engine import get_cache_mem_alloc_backend
 import ray
+from datetime import datetime
 
 logger = init_logger(__name__)
 
@@ -153,6 +154,7 @@ class BaseWorker:
             self.cache_config,
             self.scheduler_config,
             self.model_config,
+            self.rank,
         )
         # return self.cache_engine
     def get_free_blocks(self) -> int:
@@ -194,10 +196,16 @@ class BaseWorker:
             seq_metadata_list,
             self.gpu_cache,
         )
-
-        self.on_step_completed(scheduler_outputs, sampler_outputs)
-        self.cache_engine.on_step_completion(seq_metadata_list)
         
+        # This will not be executed in the pp mode
+        self.on_step_completed(scheduler_outputs, sampler_outputs)  
+        
+        # Only execute cache completion in non-pp case
+        if self.parallel_config.pipeline_parallel_size == 1:
+            self.cache_engine.on_step_completion(seq_metadata_list)
+        for seq_metadata in seq_metadata_list:
+            if seq_metadata.seq.is_finished():
+                self.seq_manager._free_seq(seq_metadata.seq.seq_id)
 
         batch_stage_end_time = time.monotonic()
 

@@ -151,7 +151,6 @@ class vATTNCacheEngine(BaseCacheEngine):
             force_release: If True, immediately release all pages instead of just marking for reclamation
         """
         if seq_id in self.seq_to_batch_idx:
-            vattention.set_verbose(True)
             batch_idx = self.seq_to_batch_idx[seq_id]
             if force_release:
                 # Directly unmap all pages for this request

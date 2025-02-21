@@ -120,6 +120,7 @@ class SarathiScheduler(BaseScheduler):
 
         num_batched_tokens: int = 0
         batch_contains_prefill: bool = False
+        # logger.info(f"len of self.running: {len(self.running)}, waiting: {len(self.waiting)}")
         # TODO(XY): think about the upgrade scheduler
         if self._during_upgrade:
             # Filter out upgrade-preempted sequences from running queue
@@ -130,12 +131,13 @@ class SarathiScheduler(BaseScheduler):
                     continue
                 filtered_running.append(seq)
             self.running = filtered_running
-            logger.info(f"upgrade before: filtered_running sequences length: {len(filtered_running)}")
+            # if len(filtered_running) > 0:
+            #     logger.info(f"upgrade before: filtered_running sequences length: {len(filtered_running)}")
 
-            if type(self.block_manager) == vAttentionBlockSpaceManager:
-                original_free_blocks = self.block_manager.free_blocks
-                self.block_manager.set_free_blocks(original_free_blocks - self.upgrade_required_blocks)
-
+            # if type(self.block_manager) == vAttentionBlockSpaceManager:
+            #     original_free_blocks = self.block_manager.free_blocks
+            #     self.block_manager.set_free_blocks(original_free_blocks - self.upgrade_required_blocks)
+        
         if type(self.block_manager) == vAttentionBlockSpaceManager:
             self.block_manager.clear_promised_blocks()
         ######################################################################
@@ -176,8 +178,10 @@ class SarathiScheduler(BaseScheduler):
                 #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks - self.block_manager.promised_blocks} required blocks {self.block_manager.get_num_blocks(seq)}")
                 # elif type(self.block_manager) == SarathiBlockSpaceManager:
                 #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
+                logger.info("Cannot append slot")
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
+                    logger.info(f"preempting seq {seq.seq_id}")
                     victim_seq = self.running.pop(-1)
                     self._preempt(victim_seq)
                     preempted_seq_ids.append(victim_seq.seq_id)
@@ -251,6 +255,7 @@ class SarathiScheduler(BaseScheduler):
             # If the sequence group cannot be allocated, stop.
             # print("[SarahtiScheduler] Allocating sequence group", seq.seq_id, " with prompt len ", seq.get_prompt_len())
             if not self.block_manager.can_allocate(seq):
+                # logger.info(f"Cannot allocate for waiting seq {seq.seq_id}")
                 # this is different from vllm scheduler
                 # even if we cannot allocate this sequence group
                 # there might be other sequence groups that can be allocated
@@ -295,7 +300,7 @@ class SarathiScheduler(BaseScheduler):
         # make sure that prefills are at the start of the batch, so that we don't violate assumptions
         # made in the original vllm codebase
         self.running = running
-        # logger.info(f"len of self.running: {len(self.running)}")
+        # logger.info(f"len of self.running: {len(self.running)}, waiting: {len(self.waiting)}")
         # for seq in self.running:
         #     logger.info(f"running sequence: {seq.seq_id}")
         return SchedulerOutputs(
@@ -543,7 +548,7 @@ class SarathiScheduler(BaseScheduler):
                 reverse=True
             )
             # TODO(XY): consider this buffer size. hardcode for now
-            required_blocks += 5  # Buffer for partial strategy
+            required_blocks += 1  # Buffer for partial strategy
 
             # For partial strategy, just free enough blocks
             for seq in running_sequences:

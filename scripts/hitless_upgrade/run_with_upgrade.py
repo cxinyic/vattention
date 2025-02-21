@@ -118,8 +118,8 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=4,
-        pp_degree=1,
+        tp_degree=1,
+        pp_degree=4,
         upgrade_strategy=upgrade_strategy,
         upgrade_required_blocks=upgrade_required_blocks,
         upgrade_engine_type="old",
@@ -132,7 +132,7 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=4,
+        tp_degree=2,
         pp_degree=1,
         upgrade_strategy=upgrade_strategy,
         upgrade_required_blocks=upgrade_required_blocks,
@@ -161,7 +161,7 @@ def main():
     # Configuration variables
     models = ["01-ai/Yi-Coder-1.5B"]
     attn_backends = ["fa_vattn"]
-    batch_sizes = [32]
+    batch_sizes = [8]
     
     # Run experiments with all upgrade strategies
     for model in models:
@@ -169,14 +169,14 @@ def main():
             for bs in batch_sizes:
                 # Run with overlap upgrade
 
-                # run_benchmark(
-                #     model=model,
-                #     attn_backend=attn_backend,
-                #     batch_size=bs,
-                #     upgrade_time=None,
-                #     base_output_dir="logs/figure_7",
-                #     upgrade_strategy=UpgradeStrategy.NO_UPGRADE
-                # )
+                run_benchmark(
+                    model=model,
+                    attn_backend=attn_backend,
+                    batch_size=bs,
+                    upgrade_time=None,
+                    base_output_dir="logs/figure_7",
+                    upgrade_strategy=UpgradeStrategy.NO_UPGRADE
+                )
                 
                 # Run with basic upgrade (no overlap)
                 # run_benchmark(
@@ -190,15 +190,15 @@ def main():
                 # )
                 
                 # # Run with overlap upgrade
-                run_benchmark(
-                    model=model,
-                    attn_backend=attn_backend,
-                    batch_size=bs,
-                    upgrade_time=40,
-                    base_output_dir="logs/figure_7",
-                    upgrade_strategy=UpgradeStrategy.DECODE_UPGRADE,
-                    upgrade_required_blocks=20
-                )
+                # run_benchmark(
+                #     model=model,
+                #     attn_backend=attn_backend,
+                #     batch_size=bs,
+                #     upgrade_time=20,
+                #     base_output_dir="logs/figure_7",
+                #     upgrade_strategy=UpgradeStrategy.DECODE_UPGRADE,
+                #     upgrade_required_blocks=40
+                # )
 
 if __name__ == "__main__":
     main()

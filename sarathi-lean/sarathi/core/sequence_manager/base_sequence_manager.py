@@ -104,8 +104,9 @@ class BaseSequenceManager(ABC):
         # this function will update the seq status
         # to finished if the stop condition is met
         seq.check_stop()
-        if seq.is_finished():
-            self._free_seq(seq.seq_id)
+        # Move this later for pp mode 
+        # if seq.is_finished():
+        #     self._free_seq(seq.seq_id)
 
     @synchronized
     def on_step_completed(

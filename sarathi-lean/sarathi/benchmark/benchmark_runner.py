@@ -22,8 +22,77 @@ from sarathi.metrics.metrics_store import MetricsStore
 from sarathi.utils import get_ip
 from sarathi.benchmark.latency_tracker import LatencyTracker
 from sarathi.config import UpgradeConfig, UpgradeStrategy
+from sarathi.engine.pipeline_parallel_llm_engine import PipelineParallelLLMEngine
 
 logger = logging.getLogger(__name__)
+import subprocess
+import os
+import xml.etree.ElementTree as ET
+import time
+import torch
+import threading
+import queue
+
+def get_gpu_memory_info():
+    """Get GPU memory usage directly from nvidia-smi"""
+    try:
+        cmd = ['nvidia-smi', '-q', '-x']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return None
+            
+        root = ET.fromstring(result.stdout)
+        gpu_info = []
+        
+        for gpu in root.findall("gpu"):
+            memory = gpu.find("fb_memory_usage")
+            gpu_dict = {
+                'id': gpu.find("minor_number").text,
+                'total': memory.find("total").text.replace('MiB', '').strip(),
+                'used': memory.find("used").text.replace('MiB', '').strip(),
+                'free': memory.find("free").text.replace('MiB', '').strip(),
+                'processes': []
+            }
+            
+            processes = gpu.find("processes")
+            if processes is not None:
+                for process in processes.findall("process_info"):
+                    pid = process.find("pid").text
+                    used_memory = process.find("used_memory").text
+                    gpu_dict['processes'].append({
+                        'pid': pid,
+                        'used_memory': used_memory.replace('MiB', '').strip()
+                    })
+                    
+            gpu_info.append(gpu_dict)
+            
+        return gpu_info
+    except Exception as e:
+        logger.error(f"Error getting GPU info: {str(e)}")
+        return None
+
+def log_memory_usage(tag=""):
+    """Log both PyTorch and nvidia-smi memory stats"""
+    try:
+        # PyTorch memory stats
+        allocated_memory = torch.cuda.memory_allocated() / (1024 * 1024)  # Convert to MB
+        reserved_memory = torch.cuda.memory_reserved() / (1024 * 1024)    # Convert to MB
+        max_allocated = torch.cuda.max_memory_allocated() / (1024 * 1024) # Convert to MB
+        
+        logger.info(f"=== Memory Usage {tag} ===")
+        logger.info(f"PyTorch Memory - Allocated: {allocated_memory:.2f}MB, Reserved: {reserved_memory:.2f}MB, Max Allocated: {max_allocated:.2f}MB")
+        
+        # nvidia-smi stats
+        gpu_info = get_gpu_memory_info()
+        if gpu_info:
+            for gpu in gpu_info:
+                logger.info(f"GPU {gpu['id']} (nvidia-smi) - Used: {gpu['used']}MB, Free: {gpu['free']}MB, Total: {gpu['total']}MB")
+                if gpu['processes']:
+                    process_info = [f"PID {p['pid']}: {p['used_memory']}MB" for p in gpu['processes']]
+                    logger.info(f"Active processes: {', '.join(process_info)}")
+    except Exception as e:
+        logger.error(f"Error logging memory usage: {str(e)}")
 
 class UpgradeState:
     """Shared state for coordinating overlap serving during upgrade"""
@@ -99,6 +168,7 @@ class BenchmarkRunner:
             )
             self._requests = request_generator.generate()
             self._requests = self._requests[self._replica_id :: self._num_replicas]
+            logger.info(f"Replica {self._replica_id} has {len(self._requests)} requests")
 
         # Configure wandb settings
         if self._num_replicas == 1:
@@ -167,6 +237,7 @@ class BenchmarkRunner:
             self._llm_engine.init_rest()
         
         self._latency_tracker = LatencyTracker(output_dir)
+        self.is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
 
     def set_upgrade_state(self, upgrade_state: UpgradeState) -> None:
         self.upgrade_state = upgrade_state
@@ -272,7 +343,7 @@ class BenchmarkRunner:
             self._latency_tracker.log_latency(seq_id, latency)
             
             # Log the latency
-            logger.info(f"Request {seq_id} completed with latency: {self._request_states[seq_id]['latency']:.4f} seconds")
+            logger.info(f"Request {seq_id} completed with latency: {self._request_states[seq_id]['latency']:.4f} seconds, with reason: {output.finish_reason}")
         else:
             self._pending_requests[seq_id] = self._request_states[seq_id]   
             # logger.info(f"Request {seq_id} updated with output tokens: {len(self._pending_requests[seq_id]['current_token_ids'])}, prompt len is {len(self._pending_requests[seq_id]['prompt_token_ids'])}")
@@ -299,7 +370,9 @@ class BenchmarkRunner:
             total=len(self._requests),
             desc=f"Replica {self._replica_id} running during upgrade",
         )
-        
+        is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
+        if is_pipeline_engine:
+            self._llm_engine.signal_start_scheduling()
         while not self.upgrade_state.is_weights_loaded():
             step_outputs = self._llm_engine.step()
             num_steps += 1
@@ -309,7 +382,11 @@ class BenchmarkRunner:
                 if output.finished:
                     num_processed_requests += 1
                     pbar.update(1)
-        
+        if is_pipeline_engine:
+            self._llm_engine.signal_stop_scheduling()
+            while self._llm_engine.has_inflight_batches():
+                logger.info(f"Waiting for inflight batches to complete")
+                time.sleep(0.01)  # Small sleep to prevent busy waiting
         pbar.close()
         progress = self.save_progress()
         return {"status": "READY_FOR_HANDOVER", "progress": progress}
@@ -327,9 +404,21 @@ class BenchmarkRunner:
         )
         start_time = time.monotonic()
 
+        # Only needed for pipeline engine
+        is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
+
         while num_processed_requests < len(self._requests):
             elapsed_time = time.monotonic() - start_time
             if not self._is_new_runner and self._config.upgrade_time and elapsed_time > self._config.upgrade_time:
+                if is_pipeline_engine:
+                    # First time hitting upgrade time - signal stop
+                    self._llm_engine.signal_stop_scheduling()
+                    logger.info(f"Replica {self._replica_id} signaled for upgrade after {elapsed_time:.2f} seconds")
+                    while self._llm_engine.has_inflight_batches():
+                        logger.info(f"Waiting for inflight batches to complete")
+                        time.sleep(0.01)  # Small sleep to prevent busy waiting
+                
+                # For non-pipeline engine, stop immediately
                 logger.info(f"Replica {self._replica_id} stopping for upgrade after {elapsed_time:.2f} seconds")
                 return "UPGRADE_NEEDED"
 
@@ -349,6 +438,9 @@ class BenchmarkRunner:
             f"Replica {self._replica_id} exiting after processing {num_processed_requests} requests "
             f"({num_steps} iterations), Total time taken: {end_time - start_time:.2f} seconds"
         )
+        if is_pipeline_engine:
+            logger.info("Stopping pipeline engine execution loops")
+            self._llm_engine.stop_execution_loops()
 
         if self._config.enable_profiling:
             self._llm_engine.stop_profiling()
@@ -482,14 +574,13 @@ class BenchmarkRunner:
     def _run_with_overlap(self) -> dict:
         """Run with overlap serving during upgrade"""
         status = self._run_normal()
-
+    
         if status == "UPGRADE_NEEDED":
             # Initialize upgrade state
             if self.upgrade_state is None:
                 logger.error("Upgrade state not set. Cannot proceed with overlap serving.")
                 return {"status": "ERROR"}
 
-            # Step 1: Prepare for upgrade (preempt sequences)
             if self._config.upgrade_strategy == UpgradeStrategy.DECODE_UPGRADE:
                 preemption_result = self.prepare_for_decode_upgrade()
             else:
@@ -710,6 +801,7 @@ class BenchmarkRunnerLauncher:
 
         if isinstance(result, dict) and result["status"] == "UPGRADE_NEEDED":
             # Start weight loading in background
+            
             init_thread = threading.Thread(target=init_new_runner)
             init_thread.start()
             
@@ -717,12 +809,31 @@ class BenchmarkRunnerLauncher:
             result = self._runner.run_during_overlap()
             
             if isinstance(result, dict) and result["status"] == "READY_FOR_HANDOVER":
-                self._runner._llm_engine.cleanup()
-                del self._runner
+                old_workers = self._runner._llm_engine.workers if hasattr(self._runner._llm_engine, 'workers') else []
+
+                    
+                # self._runner._llm_engine.cleanup()
+                # del self._runner
+                # log_memory_usage("AFTER RUNNER DELETION")
+
                 saved_progress = result["progress"]
-                
+
                 # Wait for weight loading to complete
                 init_thread.join()
+                # log_memory_usage("AFTER INIT THREAD JOIN")
+                if old_workers:
+                    logger.info(f"Cleaning up {len(old_workers)} old Ray workers")
+                    for worker in old_workers:
+                        try:
+                            ray.kill(worker)
+                        except Exception as e:
+                            logger.error(f"Error cleaning up old worker: {e}")
+
+                # Force CUDA cleanup
+                # torch.cuda.empty_cache()
+                # torch.cuda.synchronize()
+                # torch.cuda.ipc_collect()
+                # log_memory_usage("AFTER FORCE CLEANUP")
 
                 if new_runner is not None:
                     new_runner._llm_engine.init_rest()

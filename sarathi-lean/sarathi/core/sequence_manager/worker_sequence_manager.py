@@ -17,11 +17,13 @@ class WorkerSequenceManager(BaseSequenceManager):
         cache_config: CacheConfig,
         scheduler_config: BaseSchedulerConfig,
         model_config: ModelConfig,
+        rank: int,
     ):
         super().__init__()
         # we will have a clone of block manager here, it is supposed
         # to work in sync block manager in scheduler the idea is to avoid
         # sending block table every time to the worker
+        self.rank = rank
         if AttentionBackend.is_vATTN(model_config.attention_backend):
                 self.block_manager = vAttentionBlockSpaceManager(
                     cache_config.block_size,
