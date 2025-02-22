@@ -460,7 +460,7 @@ class UpgradeConfig:
         self,
         strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
         upgrade_time: float = None,
-        required_blocks: int = 20,
+        required_blocks: int = None,
         engine_type: str = "old",
     ) -> None:
         self.strategy = strategy if isinstance(strategy, UpgradeStrategy) else UpgradeStrategy(strategy)
@@ -494,13 +494,7 @@ class UpgradeConfig:
                 raise ValueError(
                     f"Upgrade time must be non-negative. Got {self.upgrade_time}."
                 )
-            
-        if self.enable_overlap_serving:
-            if self.required_blocks < 0:
-                raise ValueError(
-                    f"Required blocks must be non-negative. Got {self.required_blocks}."
-                )
-        
+                    
         if self.engine_type not in ["old", "new"]:
             raise ValueError(
                 f"Engine type must be either 'old' or 'new'. Got {self.engine_type}."

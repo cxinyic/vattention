@@ -17,3 +17,16 @@ class LLMEngine:
             engine = BaseLLMEngine(*engine_configs)
 
         return engine
+    
+    @classmethod
+    def get_engine_configs(cls, **kwargs):
+        """
+        Returns engine configurations without creating an engine.
+        
+        Args:
+            **kwargs: Engine arguments to be passed to EngineArgs
+            
+        Returns:
+            tuple: Engine configuration tuple from EngineArgs.create_engine_configs()
+        """
+        return EngineArgs(**kwargs).create_engine_configs()

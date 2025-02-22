@@ -178,11 +178,11 @@ class SarathiScheduler(BaseScheduler):
                 #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.free_blocks - self.block_manager.promised_blocks} required blocks {self.block_manager.get_num_blocks(seq)}")
                 # elif type(self.block_manager) == SarathiBlockSpaceManager:
                 #     print(f" [Sarathi] [{type(self.block_manager)}] : free blocks {self.block_manager.get_num_free_gpu_blocks()} required blocks {self.block_manager.get_num_initial_blocks(seq)}")
-                logger.info("Cannot append slot")
+                # logger.info("Cannot append slot")
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
-                    logger.info(f"preempting seq {seq.seq_id}")
                     victim_seq = self.running.pop(-1)
+                    # logger.info(f"preempting seq {victim_seq.seq_id}")
                     self._preempt(victim_seq)
                     preempted_seq_ids.append(victim_seq.seq_id)
                 else:

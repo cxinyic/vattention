@@ -102,7 +102,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
         self.schedule_event.set()
         self.schedule_thread.start()
         self.output_thread.start()
-        self.scheduler_timer_thread.start()
+        # self.scheduler_timer_thread.start()
         self.microbatch_watch_thread.start()
 
     @exit_on_error
@@ -243,6 +243,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
     def signal_start_scheduling(self) -> None:
         """Signal the scheduler to start scheduling new batches"""
         self.stop_scheduling = False
+        self.schedule_event.set()
 
     def stop_execution_loops(self) -> None:
         """Stop all execution loops gracefully"""

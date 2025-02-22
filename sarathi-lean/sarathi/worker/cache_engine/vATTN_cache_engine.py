@@ -196,8 +196,8 @@ class vATTNCacheEngine(BaseCacheEngine):
         value_cache_block = key_cache_block
         total = num_layers * (key_cache_block + value_cache_block)
         dtype_size = _get_dtype_size(model_config.dtype)
-        # logger.info(f"head_size: {head_size}, num_heads: {num_heads}, num_layers: {num_layers}, dtype_size: {dtype_size}, block_size: {block_size}")
-        # logger.info(f"key_cache_block: {key_cache_block}, value_cache_block: {value_cache_block}, total: {total}")
+        logger.info(f"head_size: {head_size}, num_heads: {num_heads}, num_layers: {num_layers}, dtype_size: {dtype_size}, block_size: {block_size}")
+        logger.info(f"key_cache_block: {key_cache_block}, value_cache_block: {value_cache_block}, total: {total}")
         return dtype_size * total
 
     def cleanup_kvcache(self):
