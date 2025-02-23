@@ -535,6 +535,13 @@ class SarathiScheduler(BaseScheduler):
         
         if required_blocks <= 0:
             return [], []
+        
+        
+        current_free_blocks = self.block_manager.get_num_free_gpu_blocks()
+        logger.info(f"Free blocks number is {current_free_blocks}")
+        if current_free_blocks >= required_blocks:
+            logger.info(f"Enough free blocks, no need to preempt")
+            return [], []
 
         freed_blocks = 0
         sequences_for_physical_free = []

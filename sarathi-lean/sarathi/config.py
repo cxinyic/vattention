@@ -461,11 +461,13 @@ class UpgradeConfig:
         strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
         upgrade_time: float = None,
         required_blocks: int = None,
+        pages_per_block: int = None,
         engine_type: str = "old",
     ) -> None:
         self.strategy = strategy if isinstance(strategy, UpgradeStrategy) else UpgradeStrategy(strategy)
         self.upgrade_time = upgrade_time
         self.required_blocks = required_blocks
+        self.pages_per_block = pages_per_block
         self.engine_type = engine_type
         self._verify_args()
     

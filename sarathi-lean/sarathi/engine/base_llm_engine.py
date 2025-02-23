@@ -567,18 +567,25 @@ class BaseLLMEngine:
             return
 
         logger.info(f"Selected {len(sequences_for_physical_free)} sequences for preemption")
-
-        free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()
-        logger.info(f"Free CUDA memory before unmapping: {free_memory / (1024**3):.2f} GB")
-
-        # 2. release the kv memory for the selected sequences
-        self._run_workers(
-            "release_sequences_kv",
-            sequences_PA=sequences_for_physical_free,
-            sequences_VA=[],
-            get_all_outputs=True
-        )
-        logger.info("Unmapped sequences from vattention")
+        if len(sequences_for_physical_free) == 0:
+            logger.info("No sequences to preempt")
+            nr_physical_blocks = required_blocks * self.upgrade_config.pages_per_block
+            logger.info(f"Releasing {nr_physical_blocks} physical blocks")
+            self._run_workers(
+                "release_empty_kv",
+                nr_physical_blocks=int(nr_physical_blocks),
+                get_all_outputs=True
+            )
+        else:
+            nr_physical_blocks = 0
+            # 2. release the kv memory for the selected sequences
+            self._run_workers(
+                "release_sequences_kv",
+                sequences_PA=sequences_for_physical_free,
+                sequences_VA=[],
+                get_all_outputs=True
+            )
+            logger.info("Unmapped sequences from vattention")
     
     def prepare_for_prefill_upgrade(self, required_blocks: int):
         """
@@ -591,6 +598,7 @@ class BaseLLMEngine:
             return
 
         logger.info(f"Preparing for upgrade, need to free {required_blocks} blocks")
+        
 
         # 1. Tell block manager to select sequences to preempt
         if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
@@ -598,13 +606,24 @@ class BaseLLMEngine:
         else:
             logger.error("Incorrect block manager type for upgrade")
             return
+        
+        logger.info(f"Selected {len(sequences_for_physical_free)} sequences for preemption")
+        if len(sequences_for_physical_free) == 0:
+            logger.info("No sequences to preempt")
+            nr_physical_blocks = required_blocks * self.upgrade_config.pages_per_block
+            logger.info(f"Releasing {nr_physical_blocks} physical blocks")
+            self._run_workers(
+                "release_empty_kv",
+                nr_physical_blocks=int(nr_physical_blocks),
+                get_all_outputs=True
+            )
+        else:
 
-
-        # 2. release the kv memory for the selected sequences
-        self._run_workers(
-            "release_sequences_kv",
-            sequences_PA=sequences_for_physical_free,
-            sequences_VA=sequences_for_virtual_free,
-            get_all_outputs=True
-        )
-        logger.info("Unmapped sequences from vattention")
+            # 2. release the kv memory for the selected sequences
+            self._run_workers(
+                "release_sequences_kv",
+                sequences_PA=sequences_for_physical_free,
+                sequences_VA=sequences_for_virtual_free,
+                get_all_outputs=True
+            )
+            logger.info("Unmapped sequences from vattention")

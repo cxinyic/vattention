@@ -270,6 +270,10 @@ class BaseWorker:
         for sequence in sequences_VA:
             self.cache_engine.free_request(sequence.seq_id, force_release=False)
 
+    @synchronized
+    def release_empty_kv(self, nr_physical_blocks: int) -> None:
+        self.cache_engine.free_physical_blocks(nr_physical_blocks)
+
 
     
 def _init_distributed_environment(

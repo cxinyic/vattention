@@ -163,6 +163,10 @@ class vATTNCacheEngine(BaseCacheEngine):
             return
         raise Exception(f"seq_id {seq_id} not found in req_table")
 
+    def free_physical_blocks(self, nr_physical_blocks: int) -> None:
+        logger.info(f"Cache Engine: Releasing {nr_physical_blocks} physical blocks")
+        vattention.remove_physical_blocks(nr_physical_blocks)
+
     def reclaim_req_ids(self) -> None:
         for seq_id in list(self.seq_to_batch_idx.keys()):
             self.free_request(seq_id)

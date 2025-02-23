@@ -259,6 +259,8 @@ def calculate_required_blocks(
     
     # Calculate number of blocks needed
     required_blocks = math.ceil(required_memory / current_block_size)
+    PAGE_SIZE = 2 * 1024 * 1024
+    pages_per_block = current_block_size / PAGE_SIZE
     logger.info("Memory Calculation Details:")
     logger.info(f"New model weights per GPU: {new_params_per_gpu:,} parameters")
     logger.info(f"Memory per parameter: {bytes_per_param} bytes")
@@ -267,8 +269,9 @@ def calculate_required_blocks(
     logger.info("\nBlock Size Details:")
     logger.info(f"Current block size: {current_block_size / (1024*1024):,.2f} MB")
     logger.info(f"Required blocks for upgrade: {required_blocks:,}")
+    logger.info(f"Pages per block: {pages_per_block:,}")
     
-    return required_blocks
+    return required_blocks, pages_per_block
 
 class UpgradeState:
     """Shared state for coordinating overlap serving during upgrade"""
@@ -406,6 +409,7 @@ class BenchmarkRunner:
             time = self._config.upgrade_time,
             strategy = self._config.upgrade_strategy,
             required_blocks = self._config.upgrade_required_blocks,
+            pages_per_block = self._config.pages_per_block,
             engine_type=upgrade_engine_type,
         )
 
@@ -595,7 +599,7 @@ class BenchmarkRunner:
                     self._llm_engine.signal_stop_scheduling()
                     logger.info(f"Replica {self._replica_id} signaled for upgrade after {elapsed_time:.2f} seconds")
                     while self._llm_engine.has_inflight_batches():
-                        logger.info(f"Waiting for inflight batches to complete")
+                        # logger.info(f"Waiting for inflight batches to complete")
                         time.sleep(0.01)  # Small sleep to prevent busy waiting
                 
                 # For non-pipeline engine, stop immediately
@@ -818,6 +822,10 @@ class BenchmarkRunnerLauncher:
 
 
         ray.init(ignore_reinit_error=True)
+        required_blocks, pages_per_block = self.calculate_upgrade_blocks()
+        self._config.upgrade_required_blocks = required_blocks
+        self._config.pages_per_block = pages_per_block
+        logger.info(f"Required blocks for upgrade: {required_blocks}")
         
         # Initialize based on multi-replica setting
         if self._is_multi_replica:
@@ -836,9 +844,7 @@ class BenchmarkRunnerLauncher:
         if wandb.run is not None:
             wandb.config.update(self._config.__dict__)
         
-        required_blocks = self.calculate_upgrade_blocks()
-        self._config.upgrade_required_blocks = required_blocks
-        logger.info(f"Required blocks for upgrade: {required_blocks}")
+        
     
     def calculate_upgrade_blocks(self) -> int:
         """
@@ -875,7 +881,7 @@ class BenchmarkRunnerLauncher:
         parallel_config = current_configs[2]  # Third element is ParallelConfig
         new_parallel_config = new_configs[2]  # Third element from new configs
         
-        required_blocks = calculate_required_blocks(
+        required_blocks, pages_per_block = calculate_required_blocks(
             model_config=model_config,
             parallel_config=parallel_config,
             new_parallel_config=new_parallel_config,
@@ -883,7 +889,7 @@ class BenchmarkRunnerLauncher:
         )
         
         logger.info(f"Calculated required blocks for upgrade: {required_blocks}")
-        return required_blocks
+        return required_blocks, pages_per_block
     
     def _validate_cluster_resources(self):
         num_replicas = self._config.cluster_num_replicas
@@ -1044,8 +1050,8 @@ class BenchmarkRunnerLauncher:
                 if self._runner.is_pipeline_engine:
                     logger.info("Stopping pipeline engine execution loops")
                     self._runner._llm_engine.stop_execution_loops()
-                # self._runner._llm_engine.cleanup()
-                # del self._runner
+                self._runner._llm_engine.cleanup()
+                del self._runner
                 # log_memory_usage("AFTER RUNNER DELETION")
 
                 saved_progress = result["progress"]

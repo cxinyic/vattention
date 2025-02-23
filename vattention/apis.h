@@ -65,3 +65,7 @@ u64 num_free_kvblocks() {
 void free_cuda_physical_memory_for_request(int reqId) {
     vattn.free_cuda_physical_memory_for_request(reqId);
 }
+
+void remove_physical_blocks(u64 required_blocks) {
+    vattn.remove_physical_blocks(required_blocks);
+}

@@ -79,6 +79,7 @@ class EngineArgs:
     strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE
     time: Optional[float] = None
     required_blocks: int = None
+    pages_per_block: int = None
     engine_type: str = "old"
 
     def __post_init__(self):
@@ -207,10 +208,12 @@ class EngineArgs:
         logger.info(f"strategy: {self.strategy}")
         logger.info(f"upgrade_time: {self.time}")
         logger.info(f"required_blocks: {self.required_blocks}")
+        logger.info(f"pages_per_block: {self.pages_per_block}")
         upgrade_config = UpgradeConfig(
             strategy=self.strategy,
             upgrade_time=self.time,
             required_blocks=self.required_blocks,
+            pages_per_block=self.pages_per_block,
             engine_type=self.engine_type,
         )
 

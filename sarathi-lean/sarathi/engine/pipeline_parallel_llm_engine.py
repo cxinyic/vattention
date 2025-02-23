@@ -248,10 +248,12 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
     def stop_execution_loops(self) -> None:
         """Stop all execution loops gracefully"""
         logger.info("Stopping execution loops")
-        self.should_stop = True
+        
         self.stop_scheduling = True
         while self.has_inflight_batches():
+            logger.info("Waiting for inflight batches to complete")
             time.sleep(0.1)
+        self.should_stop = True
         self._run_workers("cleanup_pp_worker",)
         self.schedule_event.set()
         self.microbatch_watch_event.set()
