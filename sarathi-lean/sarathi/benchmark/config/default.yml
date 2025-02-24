@@ -109,7 +109,20 @@ metrics_store:
   keep_individual_batch_metrics: false
 
 upgrade:
-  strategy: no_upgrade  # can be no_upgrade, basic_upgrade, or overlap_upgrade
-  time: 0  # upgrade time in seconds
-  required_blocks: 0  # number of required blocks for upgrade
-  engine_type: old  # engine type (old/new)
+  strategy: NO_UPGRADE  
+  time: 0  
+  required_blocks: 0  
+  pages_per_block: 0  
+  engine_type: old  
+  
+  # Pre-upgrade configuration
+  drain_strategy: KICKOUT_IMMEDIATELY  
+  drain_timeout: 0  
+  kickout_strategy: SELECTED_REQUESTS  
+  selection_policy: BY_ARRIVAL_TIME  
+  
+  # During-upgrade configuration
+  serving_strategy: DECODE_ONLY  
+  
+  # Post-upgrade configuration
+  reschedule_policy: BY_ARRIVAL_TIME  

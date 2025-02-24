@@ -321,15 +321,15 @@ class BenchmarkRunner:
 
         # Determine output directory based on upgrade strategy
         base_output_dir = f"{self._config.output_dir}/replica_{replica_id}"
-        if self._config.upgrade_strategy == UpgradeStrategy.DECODE_UPGRADE:
+        if self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY:
             base_output_dir = f"{base_output_dir}/decode_upgrade"
             if self._is_new_runner:
                 base_output_dir = f"{base_output_dir}_new"
-        elif self._config.upgrade_strategy == UpgradeStrategy.PREFILL_UPGRADE:
+        elif self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY:
             base_output_dir = f"{base_output_dir}/prefill_upgrade"
             if self._is_new_runner:
                 base_output_dir = f"{base_output_dir}_new"
-        elif self._config.upgrade_strategy == UpgradeStrategy.BASIC_UPGRADE:
+        elif self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
             base_output_dir = f"{base_output_dir}/basic_upgrade"
         else:
             base_output_dir = f"{base_output_dir}/no_upgrade"
@@ -413,7 +413,7 @@ class BenchmarkRunner:
             engine_type=upgrade_engine_type,
         )
 
-        if not self._is_new_runner or self._config.upgrade_strategy == UpgradeStrategy.BASIC_UPGRADE:
+        if not self._is_new_runner or self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
             self._llm_engine.init_rest()
         
         self._latency_tracker = LatencyTracker(output_dir)
@@ -748,9 +748,9 @@ class BenchmarkRunner:
         if not self._is_new_runner:
             self._add_requests()
 
-        if self._config.upgrade_strategy == UpgradeStrategy.DECODE_UPGRADE or self._config.upgrade_strategy == UpgradeStrategy.PREFILL_UPGRADE:
+        if self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY or self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY:
             return self._run_with_overlap()
-        elif self._config.upgrade_strategy == UpgradeStrategy.BASIC_UPGRADE:
+        elif self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
             return self._run_without_overlap()
         else:
             return self._run_normal()  # Just run normally for NO_UPGRADE
@@ -765,7 +765,7 @@ class BenchmarkRunner:
                 logger.error("Upgrade state not set. Cannot proceed with overlap serving.")
                 return {"status": "ERROR"}
 
-            if self._config.upgrade_strategy == UpgradeStrategy.DECODE_UPGRADE:
+            if self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY:
                 preemption_result = self.prepare_for_decode_upgrade()
             else:
                 preemption_result = self.prepare_for_prefill_upgrade()
@@ -1004,9 +1004,9 @@ class BenchmarkRunnerLauncher:
     def run_with_upgrade(self):
         """Run benchmark with configurable upgrade strategy"""
         if not self._is_multi_replica:
-            if self._config.upgrade_strategy == UpgradeStrategy.DECODE_UPGRADE or self._config.upgrade_strategy == UpgradeStrategy.PREFILL_UPGRADE:
+            if self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY or self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY:
                 return self._run_with_overlap_upgrade()
-            elif self._config.upgrade_strategy == UpgradeStrategy.BASIC_UPGRADE:
+            elif self._config.upgrade_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
                 return self._run_without_overlap_upgrade()
             else:
                 return self._run_normal()  # Just run normally for NO_UPGRADE

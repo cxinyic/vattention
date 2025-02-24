@@ -76,11 +76,18 @@ class EngineArgs:
     attention_backend: str = "flash_attention"
     
     # Upgrade parameters
-    strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE
+    strategy: UpgradeStrategy.Mode = UpgradeStrategy.Mode.NO_UPGRADE
     time: Optional[float] = None
     required_blocks: int = None
     pages_per_block: int = None
     engine_type: str = "old"
+    drain_strategy: UpgradeStrategy.DrainStrategy = None
+    drain_timeout: Optional[float] = None
+    kickout_strategy: UpgradeStrategy.KickoutStrategy = None
+    selection_policy: UpgradeStrategy.SelectionPolicy = None
+    serving_strategy: UpgradeStrategy.ServingStrategy = None
+    reschedule_policy: UpgradeStrategy.ReschedulePolicy = None
+    
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -215,6 +222,12 @@ class EngineArgs:
             required_blocks=self.required_blocks,
             pages_per_block=self.pages_per_block,
             engine_type=self.engine_type,
+            drain_strategy=self.drain_strategy,
+            drain_timeout=self.drain_timeout,
+            kickout_strategy=self.kickout_strategy,
+            selection_policy=self.selection_policy,
+            serving_strategy=self.serving_strategy,
+            reschedule_policy=self.reschedule_policy,
         )
 
         return (

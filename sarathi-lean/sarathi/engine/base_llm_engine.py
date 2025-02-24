@@ -103,7 +103,7 @@ class BaseLLMEngine:
         self.upgrade_engine_type = upgrade_config.engine_type
         logger.info(f"Engine upgrade type: {self.upgrade_engine_type}, upgrade strategy: {self.upgrade_config.strategy}")
         # For the basic upgrade strategy, the new engine is the same with the old engine
-        if self.upgrade_config.strategy == UpgradeStrategy.BASIC_UPGRADE and self.upgrade_engine_type == "new":
+        if self.upgrade_config.serving_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE and self.upgrade_engine_type == "new":
             self.upgrade_engine_type = "old"
         assert self.upgrade_engine_type in ["old", "new"], (
             f"Engine upgrade type must be 'old' or 'new', got {self.upgrade_engine_type}"

@@ -18,11 +18,47 @@ class SchedulerType(BaseIntEnum):
     SARATHI = 4
     SIMPLE_CHUNKING = 5
 
-class UpgradeStrategy(BaseIntEnum):
-    NO_UPGRADE = 1
-    BASIC_UPGRADE = 2
-    DECODE_UPGRADE = 3
-    PREFILL_UPGRADE = 4
+# class UpgradeStrategy(BaseIntEnum):
+#     NO_UPGRADE = 1
+#     BASIC_UPGRADE = 2
+#     DECODE_UPGRADE = 3
+#     PREFILL_UPGRADE = 4
+
+class UpgradeStrategy:
+    """Container class for all upgrade-related enumerations"""
+    
+    class Mode(BaseIntEnum):
+        """Overall upgrade strategy mode"""
+        NO_UPGRADE = 1
+        UPGRADE = 2  # Any type of upgrade, specific behavior defined by serving strategy
+
+    class DrainStrategy(BaseIntEnum):
+        """How to handle existing requests before upgrade"""
+        KICKOUT_IMMEDIATELY = 1  # Immediately kick out requests based on policy
+        WAIT_THEN_KICKOUT = 2    # Wait for a timeout, then kick out remaining requests if needed
+        
+    class KickoutStrategy(BaseIntEnum):
+        """Strategy for which requests to terminate when kickout is triggered"""
+        ALL_REQUESTS = 1        # Kick out all remaining requests
+        SELECTED_REQUESTS = 2   # Kick out requests based on the selection policy
+
+    class SelectionPolicy(BaseIntEnum):
+        """Policy for selecting which requests to terminate"""
+        BY_ARRIVAL_TIME = 1  # Select based on request arrival time
+        BY_FINISH_TIME = 2   # Select based on estimated completion time
+        BY_KV_CACHE_SIZE = 3 # Select based on KV cache memory usage
+
+    class ServingStrategy(BaseIntEnum):
+        """Strategy for handling requests during the upgrade"""
+        NO_SERVE = 1         # Don't serve any requests during upgrade
+        DECODE_ONLY = 2      # Only serve decode phase requests
+        PREFILL_ONLY = 3     # Only serve prefill phase requests
+        ADAPTIVE = 4         # Try prefill first, fallback to decode if memory limited
+
+    class ReschedulePolicy(BaseIntEnum):
+        """Policy for rescheduling remaining requests after upgrade"""
+        BY_ARRIVAL_TIME = 1   # Reschedule based on original arrival time
+        BY_PREFILL_STATUS = 2 # Prioritize requests that have not completed prefill
 
 class ModelConfig:
     """Configuration for the model.
@@ -448,66 +484,161 @@ class MetricsConfig:
         )
 
 class UpgradeConfig:
-    """Configuration for model upgrade behavior.
+    """Enhanced configuration for model upgrade behavior with multiple stages.
     
     Args:
-        strategy: Upgrade strategy (NO_UPGRADE, BASIC_UPGRADE, or DECODE_UPGRADE)
-        upgrade_time: Time in seconds after which to trigger upgrade (None if no upgrade)
+        strategy: Overall upgrade strategy (NO_UPGRADE or UPGRADE)
+        upgrade_time: Time in seconds after which to trigger upgrade
         required_blocks: Number of blocks required for preemption during overlap serving
+            (Scheduler will check if enough blocks are freed during wait period)
+        pages_per_block: Number of pages per memory block
         engine_type: Type of engine ('old' or 'new') during upgrade process
+        
+        # Pre-upgrade configuration
+        drain_strategy: How to handle existing requests before upgrade:
+            - KICKOUT_IMMEDIATELY: Immediately terminate requests without waiting
+            - WAIT_THEN_KICKOUT: Wait for a timeout, then kick out remaining requests if needed
+              (The scheduler will check if enough blocks are freed before the timeout)
+        
+        drain_timeout: Maximum time in seconds to wait before kickout (for WAIT_THEN_KICKOUT)
+        
+        kickout_strategy: Strategy for which requests to terminate when kickout is triggered:
+            - ALL_REQUESTS: Terminate all remaining requests
+            - SELECTED_REQUESTS: Use selection_policy to select which requests to terminate
+        
+        selection_policy: Policy for selecting requests to terminate if using SELECTED_REQUESTS:
+            - BY_ARRIVAL_TIME: Select based on when requests arrived 
+            - BY_FINISH_TIME: Select based on estimated completion time
+            - BY_KV_CACHE_SIZE: Select based on KV cache memory usage
+        
+        # During-upgrade configuration
+        serving_strategy: Strategy for handling requests during the upgrade:
+            - NO_SERVE: Don't serve any requests (equivalent to the old BASIC_UPGRADE)
+            - DECODE_ONLY: Only serve decode phase requests (equivalent to the old DECODE_UPGRADE)
+            - PREFILL_ONLY: Only serve prefill phase requests
+            - ADAPTIVE: Try prefill first, fallback to decode if memory is limited
+            (Note: The adaptive strategy's memory threshold is controlled by the scheduler)
+        
+        # Post-upgrade configuration
+        reschedule_policy: Policy for rescheduling remaining requests after upgrade:
+            - BY_ARRIVAL_TIME: Reschedule based on original arrival time
+            - BY_PREFILL_STATUS: Prioritize requests that completed prefill
     """
     def __init__(
         self,
-        strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
+        strategy: UpgradeStrategy.Mode = UpgradeStrategy.Mode.NO_UPGRADE,
         upgrade_time: float = None,
         required_blocks: int = None,
         pages_per_block: int = None,
         engine_type: str = "old",
+        
+        # Pre-upgrade options (relevant only if strategy != NO_UPGRADE)
+        drain_strategy: UpgradeStrategy.DrainStrategy = UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT,
+        drain_timeout: Optional[float] = None,
+        kickout_strategy: UpgradeStrategy.KickoutStrategy = UpgradeStrategy.KickoutStrategy.ALL_REQUESTS,
+        selection_policy: Optional[UpgradeStrategy.SelectionPolicy] = None,
+        
+        # During-upgrade options (relevant only if strategy != NO_UPGRADE)
+        serving_strategy: UpgradeStrategy.ServingStrategy = UpgradeStrategy.ServingStrategy.NO_SERVE,
+        
+        # Post-upgrade options (relevant only if strategy != NO_UPGRADE)
+        reschedule_policy: UpgradeStrategy.ReschedulePolicy = UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME,
     ) -> None:
-        self.strategy = strategy if isinstance(strategy, UpgradeStrategy) else UpgradeStrategy(strategy)
+        # Base configuration
+        self.strategy = strategy if isinstance(strategy, UpgradeStrategy.Mode) else UpgradeStrategy.Mode(strategy)
         self.upgrade_time = upgrade_time
         self.required_blocks = required_blocks
         self.pages_per_block = pages_per_block
         self.engine_type = engine_type
+        
+        # Pre-upgrade configuration
+        self.drain_strategy = drain_strategy
+        self.drain_timeout = drain_timeout
+        self.kickout_strategy = kickout_strategy
+        self.selection_policy = selection_policy
+        
+        # During-upgrade configuration
+        self.serving_strategy = serving_strategy
+        
+        # Post-upgrade configuration
+        self.reschedule_policy = reschedule_policy
+        
         self._verify_args()
-    
+
     @property
     def enable_upgrade(self) -> bool:
         """Whether upgrade is enabled at all"""
-        return self.strategy != UpgradeStrategy.NO_UPGRADE
+        return self.strategy != UpgradeStrategy.Mode.NO_UPGRADE
     
     @property
     def enable_overlap_serving(self) -> bool:
         """Whether overlap serving is enabled during upgrade"""
-        return self.strategy == UpgradeStrategy.DECODE_UPGRADE
+        return (self.strategy == UpgradeStrategy.Mode.UPGRADE and 
+                self.serving_strategy != UpgradeStrategy.ServingStrategy.NO_SERVE)
     
     def _verify_args(self) -> None:
         """Verify the arguments."""
-        if not isinstance(self.strategy, UpgradeStrategy):
+        if not isinstance(self.strategy, UpgradeStrategy.Mode):
             raise ValueError(
                 f"Invalid upgrade strategy: {self.strategy}. "
-                f"Must be one of {[s.name for s in UpgradeStrategy]}"
+                f"Must be one of {[s.name for s in UpgradeStrategy.Mode]}"
             )
         
-        if self.enable_upgrade:
-            if self.upgrade_time is None:
-                raise ValueError("Upgrade time must be specified when upgrade is enabled")
-            if self.upgrade_time < 0:
+        # If no upgrade is planned, we don't need to validate other parameters
+        if self.strategy == UpgradeStrategy.Mode.NO_UPGRADE:
+            return
+        
+        # Validations for when upgrade is enabled
+        if self.upgrade_time is None:
+            raise ValueError("Upgrade time must be specified when upgrade is enabled")
+        if self.upgrade_time < 0:
+            raise ValueError(
+                f"Upgrade time must be non-negative. Got {self.upgrade_time}."
+            )
+        
+        # Verify drain configuration
+        if self.drain_strategy == UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT:
+            if self.drain_timeout is None:
                 raise ValueError(
-                    f"Upgrade time must be non-negative. Got {self.upgrade_time}."
+                    "Drain timeout must be specified when using WAIT_THEN_KICKOUT drain strategy."
                 )
-                    
+            if self.drain_timeout < 0:
+                raise ValueError(
+                    f"Drain timeout must be non-negative. Got {self.drain_timeout}."
+                )
+        
+        if self.kickout_strategy == UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS and self.selection_policy is None:
+            raise ValueError(
+                "Selection policy must be specified when using SELECTED_REQUESTS kickout strategy."
+            )
+                
         if self.engine_type not in ["old", "new"]:
             raise ValueError(
                 f"Engine type must be either 'old' or 'new'. Got {self.engine_type}."
             )
-    
+
     def __str__(self) -> str:
+        if self.strategy == UpgradeStrategy.Mode.NO_UPGRADE:
+            return "UpgradeConfig(strategy=NO_UPGRADE)"
+        
+        drain_details = ""
+        if self.drain_strategy == UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY:
+            scope = "all" if self.kickout_strategy == UpgradeStrategy.KickoutStrategy.ALL_REQUESTS else f"selected({self.selection_policy.name})"
+            drain_details = f"kickout_immediately({scope})"
+        elif self.drain_strategy == UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT:
+            scope = "all" if self.kickout_strategy == UpgradeStrategy.KickoutStrategy.ALL_REQUESTS else f"selected({self.selection_policy.name})"
+            drain_details = f"wait_then_kickout(time={self.drain_timeout}, {scope})"
+        
         return (
-            f"UpgradeConfig(strategy={self.strategy.name}, "
-            f"upgrade_time={self.upgrade_time}, "
-            f"required_blocks={self.required_blocks}, "
-            f"engine_type={self.engine_type})"
+            f"UpgradeConfig(\n"
+            f"  strategy=UPGRADE,\n"
+            f"  upgrade_time={self.upgrade_time},\n"
+            f"  drain_strategy={drain_details},\n"
+            f"  serving_strategy={self.serving_strategy.name},\n"
+            f"  reschedule_policy={self.reschedule_policy.name},\n"
+            # f"  required_blocks={self.required_blocks},\n" # This will be set later
+            # f"  engine_type={self.engine_type}\n" # This will be set later
+            f")"
         )
 
     def __repr__(self) -> str:

@@ -17,7 +17,7 @@ from sarathi.core.datatypes.sequence import SequenceMetadata
 from sarathi.engine.base_llm_engine import BaseLLMEngine
 from sarathi.logger import init_logger
 from sarathi.utils.threading_utils import exit_on_error
-from sarathi.config import UpgradeConfig, UpgradeStrategy
+from sarathi.config import UpgradeConfig
 from sarathi.core.block_space_manager.vattention_block_space_manager import (
     vAttentionBlockSpaceManager,
 )

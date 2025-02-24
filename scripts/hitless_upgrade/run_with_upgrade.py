@@ -1,24 +1,23 @@
 import os
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from sarathi.benchmark.config import Config
 from sarathi.config import UpgradeConfig, UpgradeStrategy
 from sarathi.benchmark.benchmark_runner import BenchmarkRunnerLauncher
 from sarathi.benchmark.latency_tracker import LatencyTracker
 
+
 def create_config(
     model: str,
     batch_size: int,
     attn_backend: str,
     output_dir: str,
+    upgrade_config: UpgradeConfig,
     context_length: int = 4608,
     block_size: int = None,
     tp_degree: int = 4,
     pp_degree: int = 1,
-    upgrade_strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
-    upgrade_engine_type: str = "old",
-    upgrade_time: float = None,
 ) -> Config:
     """Create benchmark configuration"""
     if block_size is None:
@@ -28,7 +27,9 @@ def create_config(
             block_size = 2097152  # 2MB
         else:
             block_size = 16
-    print(f"upgrade_strategy: {upgrade_strategy}")
+            
+    print(f"In create_config, upgrade_serving_strategy: {upgrade_config.serving_strategy}")
+
     args = {
         # model config
         "model_name": model,
@@ -84,45 +85,85 @@ def create_config(
         "replica_resource_mapping": None,
         
         # upgrade config
-        "upgrade_strategy": upgrade_strategy,
-        "upgrade_engine_type": upgrade_engine_type,
-        "upgrade_time": upgrade_time,
+        "upgrade_strategy": upgrade_config.strategy,
+        "upgrade_time": upgrade_config.upgrade_time,
+        "upgrade_engine_type": upgrade_config.engine_type,
+        "upgrade_drain_strategy": upgrade_config.drain_strategy,
+        "upgrade_drain_timeout": upgrade_config.drain_timeout,
+        "upgrade_kickout_strategy": upgrade_config.kickout_strategy,
+        "upgrade_selection_policy": upgrade_config.selection_policy,
+        "upgrade_serving_strategy": upgrade_config.serving_strategy,
+        "upgrade_reschedule_policy": upgrade_config.reschedule_policy,
     }
     
     return Config(args)
+
 
 def run_benchmark(
     model: str = "01-ai/Yi-6B-200k",
     attn_backend: str = "fa_vattn",
     batch_size: int = 8,
-    upgrade_time: float = 10,  
-    base_output_dir: str = "logs/figure_7",
-    upgrade_strategy: UpgradeStrategy = UpgradeStrategy.NO_UPGRADE,
+    base_output_dir: str = "logs/hitless_upgrade",
+    upgrade_config: Optional[UpgradeConfig] = None,
 ) -> None:
     """Run benchmark with upgrade capability"""
-    
+    # Use default upgrade config if none provided
+    if upgrade_config is None:
+        upgrade_config = UpgradeConfig(
+            strategy=UpgradeStrategy.Mode.UPGRADE,
+            upgrade_time=20,
+            drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+            drain_timeout=0,
+            kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+            selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+            serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+            reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+        )
+
     # Create output directory with strategy-specific subdirectory
     output_dir = os.path.join(
         base_output_dir,
-        f"model_{model}_bs_{batch_size}_attn_{attn_backend}",
-        upgrade_strategy.name.lower()
+        f"bs_{batch_size}",
+        upgrade_config.serving_strategy.name.lower()
     )
     os.makedirs(output_dir, exist_ok=True)
-    print(f"In run_benchmark, upgrade_strategy: {upgrade_strategy}")
+    
     # Create initial config with "old" engine type
+    old_engine_config = UpgradeConfig(
+        strategy=upgrade_config.strategy,
+        upgrade_time=upgrade_config.upgrade_time,
+        engine_type="old",
+        drain_strategy=upgrade_config.drain_strategy,
+        drain_timeout=upgrade_config.drain_timeout,
+        kickout_strategy=upgrade_config.kickout_strategy,
+        selection_policy=upgrade_config.selection_policy,
+        serving_strategy=upgrade_config.serving_strategy,
+        reschedule_policy=upgrade_config.reschedule_policy
+    )
+    
     initial_config = create_config(
         model=model,
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=2,
-        pp_degree=2,
-        upgrade_strategy=upgrade_strategy,
-        upgrade_engine_type="old",
-        upgrade_time=upgrade_time
+        tp_degree=4,
+        pp_degree=1,
+        upgrade_config=old_engine_config
     )
     
     # Create new config with "new" engine type
+    new_engine_config = UpgradeConfig(
+        strategy=upgrade_config.strategy,
+        upgrade_time=upgrade_config.upgrade_time,
+        engine_type="new",
+        drain_strategy=upgrade_config.drain_strategy,
+        drain_timeout=upgrade_config.drain_timeout,
+        kickout_strategy=upgrade_config.kickout_strategy,
+        selection_policy=upgrade_config.selection_policy,
+        serving_strategy=upgrade_config.serving_strategy,
+        reschedule_policy=upgrade_config.reschedule_policy
+    )
+    
     new_config = create_config(
         model=model,
         batch_size=batch_size,
@@ -130,16 +171,13 @@ def run_benchmark(
         output_dir=output_dir,
         tp_degree=4,
         pp_degree=1,
-        upgrade_strategy=upgrade_strategy,
-        upgrade_engine_type="new",
-        upgrade_time=upgrade_time
+        upgrade_config=new_engine_config
     )
     
     print("\n=====================================================================================")
     print(f"Running Config ==> Model: {model} Batch Size: {batch_size} Attention Backend: {attn_backend}")
-    print(f"Upgrade Strategy: {upgrade_strategy.name}")
-    if upgrade_strategy != UpgradeStrategy.NO_UPGRADE:
-        print(f"Upgrade Time: {upgrade_time} seconds")
+    print(f"Upgrade Configuration:")
+    print(upgrade_config)
     print("======================================================================================\n")
     
     # Create and run benchmark
@@ -150,47 +188,38 @@ def run_benchmark(
     
     launcher.run_with_upgrade()
 
+
 def main():
     """Main function to run benchmarks with different configurations"""
     # Configuration variables
     models = ["01-ai/Yi-Coder-1.5B"]
     attn_backends = ["fa_vattn"]
-    batch_sizes = [64]
+    batch_sizes = [32]
     
-    # Run experiments with all upgrade strategies
+    # Create the upgrade configuration once
+    upgrade_config = UpgradeConfig(
+        strategy=UpgradeStrategy.Mode.UPGRADE,
+        upgrade_time=20,
+        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+        drain_timeout=0,
+        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+        serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+    )
+    
+    # Run experiments with all configurations
     for model in models:
         for attn_backend in attn_backends:
             for bs in batch_sizes:
-                # Run with overlap upgrade
-
-                # run_benchmark(
-                #     model=model,
-                #     attn_backend=attn_backend,
-                #     batch_size=bs,
-                #     upgrade_time=None,
-                #     base_output_dir="logs/figure_7",
-                #     upgrade_strategy=UpgradeStrategy.NO_UPGRADE
-                # )
-                
-                # Run with basic upgrade (no overlap)
-                # run_benchmark(
-                #     model=model,
-                #     attn_backend=attn_backend,
-                #     batch_size=bs,
-                #     upgrade_time=20,
-                #     base_output_dir="logs/figure_7",
-                #     upgrade_strategy=UpgradeStrategy.BASIC_UPGRADE,
-                # )
-                
-                # # Run with overlap upgrade
                 run_benchmark(
                     model=model,
                     attn_backend=attn_backend,
                     batch_size=bs,
-                    upgrade_time=20,
-                    base_output_dir="logs/figure_7",
-                    upgrade_strategy=UpgradeStrategy.DECODE_UPGRADE,
+                    base_output_dir="logs/hitless_upgrade",
+                    upgrade_config=upgrade_config
                 )
+
 
 if __name__ == "__main__":
     main()
