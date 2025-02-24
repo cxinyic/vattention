@@ -102,7 +102,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
         self.schedule_event.set()
         self.schedule_thread.start()
         self.output_thread.start()
-        # self.scheduler_timer_thread.start()
+        self.scheduler_timer_thread.start()
         self.microbatch_watch_thread.start()
 
     @exit_on_error

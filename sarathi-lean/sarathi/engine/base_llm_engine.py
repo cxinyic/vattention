@@ -627,3 +627,47 @@ class BaseLLMEngine:
                 get_all_outputs=True
             )
             logger.info("Unmapped sequences from vattention")
+
+    def prepare_for_upgrade(self):
+        """
+        Prepare for upgrade by selecting and preempting sequences.
+        """
+        required_blocks = self.upgrade_config.required_blocks
+
+        if self.upgrade_engine_type != "old":
+            logger.warning(f"prepare_for_upgrade called on non-old engine")
+            return
+
+        logger.info(f"Preparing for upgrade, need to free {required_blocks} blocks")
+
+        # 1. Tell block manager to select sequences to preempt
+        if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
+            # The only difference between decode and prefill is the preemption_mode
+            preemption_mode = "partial" if self.upgrade_config.serving_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY else "full"
+            sequences_for_physical_free, sequences_for_virtual_free = self.scheduler.select_preemption_sequences(required_blocks, preemption_mode)
+        else:
+            logger.error("Incorrect block manager type for upgrade")
+            return
+        
+        logger.info(f"Selected {len(sequences_for_physical_free)} sequences for preemption")
+        if len(sequences_for_physical_free) == 0:
+            logger.info("No sequences to preempt")
+            nr_physical_blocks = required_blocks * self.upgrade_config.pages_per_block
+            logger.info(f"Releasing {nr_physical_blocks} physical blocks")
+            self._run_workers(
+                "release_empty_kv",
+                nr_physical_blocks=int(nr_physical_blocks),
+                get_all_outputs=True
+            )
+        else:
+            # For decode upgrade, sequences_for_virtual_free is empty (initialized as [] in the original)
+            sequences_va = sequences_for_virtual_free if self.upgrade_config.serving_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY else []
+            
+            # 2. release the kv memory for the selected sequences
+            self._run_workers(
+                "release_sequences_kv",
+                sequences_PA=sequences_for_physical_free,
+                sequences_VA=sequences_va,
+                get_all_outputs=True
+            )
+            logger.info("Unmapped sequences from vattention")

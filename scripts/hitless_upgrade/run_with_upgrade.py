@@ -4,8 +4,8 @@ from typing import Dict, Any, Optional
 
 from sarathi.benchmark.config import Config
 from sarathi.config import UpgradeConfig, UpgradeStrategy
-from sarathi.benchmark.benchmark_runner import BenchmarkRunnerLauncher
-from sarathi.benchmark.latency_tracker import LatencyTracker
+from sarathi.benchmark.benchmark_launcher import BenchmarkRunnerLauncher
+
 
 
 def create_config(
@@ -109,6 +109,7 @@ def run_benchmark(
     """Run benchmark with upgrade capability"""
     # Use default upgrade config if none provided
     if upgrade_config is None:
+        logger.info("Using default upgrade configuration")
         upgrade_config = UpgradeConfig(
             strategy=UpgradeStrategy.Mode.UPGRADE,
             upgrade_time=20,
@@ -116,7 +117,7 @@ def run_benchmark(
             drain_timeout=0,
             kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
             selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-            serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+            serving_strategy=UpgradeStrategy.ServingStrategy.PREFILL_ONLY,
             reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
         )
 
@@ -146,8 +147,8 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=4,
-        pp_degree=1,
+        tp_degree=2,
+        pp_degree=2,
         upgrade_config=old_engine_config
     )
     
@@ -207,6 +208,9 @@ def main():
         serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
         reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
     )
+    # upgrade_config = UpgradeConfig(
+    #     strategy=UpgradeStrategy.Mode.NO_UPGRADE
+    # )
     
     # Run experiments with all configurations
     for model in models:
