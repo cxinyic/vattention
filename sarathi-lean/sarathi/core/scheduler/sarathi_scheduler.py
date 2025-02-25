@@ -242,6 +242,9 @@ class SarathiScheduler(BaseScheduler):
         # sequence groups are added to the front and the new sequence groups
         # are added to the back.
         while self.waiting:
+            # draining mode will not allow new requests to be scheduled
+            if self._during_draining:
+                break
             seq = self.waiting[0]
 
             # This is required to handle benchmarking where we set request arrival time ahead of time

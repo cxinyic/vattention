@@ -195,14 +195,14 @@ def main():
     # Configuration variables
     models = ["01-ai/Yi-Coder-1.5B"]
     attn_backends = ["fa_vattn"]
-    batch_sizes = [32]
+    batch_sizes = [64]
     
     # Create the upgrade configuration once
     upgrade_config = UpgradeConfig(
         strategy=UpgradeStrategy.Mode.UPGRADE,
         upgrade_time=20,
-        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-        drain_timeout=0,
+        drain_strategy=UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT,
+        drain_timeout=5,
         kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
         selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
         serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,

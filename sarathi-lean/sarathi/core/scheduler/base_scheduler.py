@@ -51,6 +51,7 @@ class BaseScheduler(ABC):
         self.running: List[Sequence] = []
 
         self._during_upgrade = False
+        self._during_draining = False
 
     def set_block_manager(self, model_config):
         attn_cfg = model_config.attention_backend
@@ -86,6 +87,15 @@ class BaseScheduler(ABC):
     
     def set_upgrade(self) -> None:
         self._during_upgrade = True
+    
+    def set_drain(self) -> None:
+        self._during_draining = True
+    
+    def has_enough_blocks(self, required_blocks: int) -> bool:
+        current_free_blocks = self.block_manager.get_num_free_gpu_blocks()
+        if current_free_blocks >= required_blocks:
+            return True
+        return False
 
     @abstractmethod
     def _schedule(self) -> SchedulerOutputs:

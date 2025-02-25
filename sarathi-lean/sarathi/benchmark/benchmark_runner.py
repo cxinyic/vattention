@@ -169,6 +169,7 @@ class BenchmarkRunner:
             serving_strategy=self._config.upgrade_serving_strategy,
             reschedule_policy=self._config.upgrade_reschedule_policy,
         )
+        self._llm_engine.upgrade_config.drain_strategy 
 
         if not self._is_new_runner or self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
             self._llm_engine.init_rest()
@@ -332,22 +333,60 @@ class BenchmarkRunner:
 
         # Only needed for pipeline engine
         is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
+        
+        # Check if we're in wait mode
+        is_wait_mode = False
+        if self._llm_engine.upgrade_config.drain_strategy == UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT:
+            is_wait_mode = True
+        # Track drain mode
+        drain_mode_start_time = None
 
         while num_processed_requests < len(self._requests):
             elapsed_time = time.monotonic() - start_time
+            
             if not self._is_new_runner and self._config.upgrade_time and elapsed_time > self._config.upgrade_time:
-                if is_pipeline_engine:
-                    # First time hitting upgrade time - signal stop
-                    logger.info(f"Replica {self._replica_id} reached upgrade time after {elapsed_time:.2f} seconds")
-                    self._llm_engine.signal_stop_scheduling()
-                    logger.info(f"Replica {self._replica_id} signaled for upgrade after {elapsed_time:.2f} seconds")
-                    while self._llm_engine.has_inflight_batches():
-                        # logger.info(f"Waiting for inflight batches to complete")
-                        time.sleep(0.01)  # Small sleep to prevent busy waiting
+                # wait mode will not stop immediately, but send a signal to do draining
+                if is_wait_mode:
+                    # First time entering drain mode
+                    if drain_mode_start_time is None:
+                        logger.info(f"Replica {self._replica_id} reached upgrade time after {elapsed_time:.2f} seconds")
+                        self._llm_engine.scheduler.set_drain()
+                        drain_mode_start_time = time.monotonic()
+                        logger.info(f"Replica {self._replica_id} entered drain mode - no new requests will be scheduled")
+                    
+                    # Check if we've exceeded the drain timeout
+                    drain_elapsed = time.monotonic() - drain_mode_start_time
+                    drain_timeout = getattr(self._llm_engine.upgrade_config, "drain_timeout", float('inf'))
+                    
+                    if drain_elapsed > drain_timeout or self._llm_engine.scheduler.has_enough_blocks(self._llm_engine.upgrade_config.required_blocks):
+                        # Time to exit - prepare if needed
+                        should_exit = True
+                    else:
+                        # Continue in drain mode
+                        should_exit = False
+                else:
+                    # Not in wait mode, exit immediately
+                    should_exit = True
                 
-                # For non-pipeline engine, stop immediately
-                logger.info(f"Replica {self._replica_id} stopping for upgrade after {elapsed_time:.2f} seconds")
-                return "UPGRADE_NEEDED"
+                # If we need to exit, handle pipeline engine first if applicable
+                if should_exit:
+                    if is_pipeline_engine:
+                        # Signal stop if not already in drain mode
+                        if not is_wait_mode or drain_mode_start_time is None:
+                            logger.info(f"Replica {self._replica_id} signaling pipeline to stop scheduling")
+                        self._llm_engine.signal_stop_scheduling()
+                        logger.info(f"Replica {self._replica_id} signaled for upgrade after {elapsed_time:.2f} seconds")
+                        while self._llm_engine.has_inflight_batches():
+                            time.sleep(0.01)  # Small sleep to prevent busy waiting
+                    
+                    # Exit message differs based on reason
+                    logger.info(f"Replica {self._replica_id} stopping for upgrade after {elapsed_time:.2f} seconds")
+                    if is_wait_mode:
+                        if drain_elapsed > drain_timeout:
+                            logger.info(f"Replica {self._replica_id} exceeded drain timeout of {drain_timeout:.2f} seconds, stopping for upgrade")
+                        else:
+                            logger.info(f"Replica {self._replica_id} has enough blocks before drain timeout, stopping for upgrade")
+                    return "UPGRADE_NEEDED"
 
             step_outputs = self._llm_engine.step()
             num_steps += 1
@@ -356,7 +395,7 @@ class BenchmarkRunner:
                 self._update_request_state(output)
                 if output.finished:
                     num_processed_requests += 1
-                    pbar.update(1)
+                    pbar.update(1)        
 
         end_time = time.monotonic()
         pbar.close()
@@ -373,7 +412,7 @@ class BenchmarkRunner:
             self._llm_engine.stop_profiling()
 
         return "COMPLETED"
-    
+
     def save_progress(self) -> dict:
         """Save the current progress of requests."""
         progress = {
