@@ -109,12 +109,12 @@ def run_benchmark(
     """Run benchmark with upgrade capability"""
     # Use default upgrade config if none provided
     if upgrade_config is None:
-        logger.info("Using default upgrade configuration")
+        print("Using default upgrade configuration")
         upgrade_config = UpgradeConfig(
             strategy=UpgradeStrategy.Mode.UPGRADE,
             upgrade_time=20,
             drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-            drain_timeout=0,
+            drain_timeout=5,
             kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
             selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
             serving_strategy=UpgradeStrategy.ServingStrategy.PREFILL_ONLY,
@@ -204,7 +204,7 @@ def main():
         drain_strategy=UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT,
         drain_timeout=5,
         kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+        selection_policy=UpgradeStrategy.SelectionPolicy.BY_FINISH_TIME,
         serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
         reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
     )

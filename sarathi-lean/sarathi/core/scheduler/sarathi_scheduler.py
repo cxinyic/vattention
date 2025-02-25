@@ -15,6 +15,7 @@ from sarathi.core.datatypes.sequence import Sequence, SequenceScheduleMetadata
 from sarathi.core.scheduler.base_scheduler import BaseScheduler
 from sarathi.logger import init_logger
 from sarathi.model_executor.attention import is_vattention_backend
+from sarathi.config import UpgradeStrategy
 
 logger = init_logger(__name__)
 
@@ -519,7 +520,7 @@ class SarathiScheduler(BaseScheduler):
             scheduled_seq_metadata_list=scheduled_seq_metadata_list,
         )
     
-    def select_preemption_sequences(self, required_blocks: int, strategy: str = 'partial') -> List[Sequence]:
+    # def select_preemption_sequences(self, required_blocks: int, strategy: str = 'partial') -> List[Sequence]:
         """Select sequences for preemption based on strategy.
         
         Args:
@@ -612,6 +613,113 @@ class SarathiScheduler(BaseScheduler):
               
         # For full strategy, clear the running queue
         # Update running queue based on strategy
+        if strategy == 'full':
+            self.running = []
+                  
+        return sequences_for_physical_free, sequences_for_virtual_free
+    
+    def select_preemption_sequences(self, required_blocks: int, strategy: str = 'partial', 
+                            selection_policy: UpgradeStrategy.SelectionPolicy = UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME) -> List[Sequence]:
+        """Select sequences for preemption based on strategy and policy.
+        
+        Args:
+            required_blocks (int): Number of blocks needed to be freed
+            strategy (str): Either 'partial' or 'full'
+                - 'partial': Preempt minimum sequences needed, keep others running
+                - 'full': Preempt all sequences, but only free physical memory for enough sequences to meet required_blocks
+            selection_policy (SelectionPolicy): Policy to determine which sequences to preempt first
+                - BY_ARRIVAL_TIME: Select newer sequences first (based on arrival time)
+                - BY_FINISH_TIME: Select sequences with the longest estimated remaining time
+                - BY_KV_CACHE_SIZE: Select sequences using the most KV cache memory
+        
+        Returns:
+            Tuple[List[Sequence], List[Sequence]]: For partial strategy: (sequences_to_preempt, [])
+                                                  For full strategy: (sequences_for_physical_free, sequences_for_virtual_free)
+        """
+        assert strategy in ['partial', 'full'], f"Invalid strategy: {strategy}"
+        self.preemption_strategy = strategy
+        self.upgrade_required_blocks = required_blocks
+        
+        if required_blocks <= 0:
+            return [], []
+        
+        current_free_blocks = self.block_manager.get_num_free_gpu_blocks()
+        logger.info(f"Free blocks number is {current_free_blocks}")
+        if current_free_blocks >= required_blocks:
+            logger.info(f"Enough free blocks, no need to preempt")
+            return [], []
+
+        freed_blocks = 0
+        sequences_for_physical_free = []
+        sequences_for_virtual_free = []
+        
+        # Define sorting key function based on selection policy
+        def get_sort_key(seq):
+            if selection_policy == UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME:
+                # Newer sequences first (higher arrival time)
+                return seq.arrival_time
+            elif selection_policy == UpgradeStrategy.SelectionPolicy.BY_FINISH_TIME:
+                return seq.num_tokens_to_finish()
+            elif selection_policy == UpgradeStrategy.SelectionPolicy.BY_KV_CACHE_SIZE:
+                if type(self.block_manager) == vAttentionBlockSpaceManager:
+                    return self.block_manager.get_num_blocks(seq)
+                return 0  # Default fallback if block manager is not vAttentionBlockSpaceManager
+        
+        # Use the same sorting for both strategies - sort based only on selection policy
+        running_sequences = sorted(
+            self.running,
+            key=get_sort_key,
+            reverse=True  # Reverse to get the highest values first
+        )
+        
+        if strategy == 'partial':
+            # Buffer for partial strategy
+            required_blocks += 1
+
+            # For partial strategy, just free enough blocks
+            for seq in running_sequences:
+                if type(self.block_manager) == vAttentionBlockSpaceManager:
+                    seq_blocks = self.block_manager.get_num_blocks(seq)
+                else:
+                    logger.error("Incorrect block manager type for upgrade")
+                    return [], []
+
+                freed_blocks += seq_blocks
+                sequences_for_physical_free.append(seq)
+                logger.info(f"Selected sequence {seq.seq_id} for preemption (policy: {selection_policy.name}), frees {seq_blocks} blocks")
+
+                if freed_blocks >= required_blocks:
+                    break
+
+        else:  # full strategy
+            # Keep adding to physical_free until we meet required_blocks
+            for seq in running_sequences:
+                if freed_blocks < required_blocks:
+                    # Need more blocks, add to physical free
+                    if type(self.block_manager) == vAttentionBlockSpaceManager:
+                        seq_blocks = self.block_manager.get_num_blocks(seq)
+                        freed_blocks += seq_blocks
+                    sequences_for_physical_free.append(seq)
+                    logger.info(f"Selected sequence {seq.seq_id} for physical memory free (policy: {selection_policy.name}), frees {seq_blocks} blocks")
+                else:
+                    # Have enough blocks, rest go to virtual free
+                    sequences_for_virtual_free.append(seq)
+                    logger.info(f"Selected sequence {seq.seq_id} for virtual memory free (policy: {selection_policy.name})")
+
+        logger.info(f"Strategy: {strategy}, Policy: {selection_policy.name}, Total blocks freed: {freed_blocks}, Required: {required_blocks}")
+        logger.info(f"Physical free sequences: {len(sequences_for_physical_free)}, Virtual free sequences: {len(sequences_for_virtual_free)}")
+
+        # Update preempted sequence IDs for all sequences
+        self.upgrade_preempted_seq_ids.update(seq.seq_id for seq in sequences_for_physical_free)
+        self.upgrade_preempted_seq_ids.update(seq.seq_id for seq in sequences_for_virtual_free)
+        
+        # Free both from the block manager
+        for seq in sequences_for_physical_free:
+            self.block_manager.free(seq)
+        for seq in sequences_for_virtual_free:
+            self.block_manager.free(seq)
+              
+        # For full strategy, clear the running queue
         if strategy == 'full':
             self.running = []
                   

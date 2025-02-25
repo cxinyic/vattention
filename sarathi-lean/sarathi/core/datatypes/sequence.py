@@ -154,6 +154,9 @@ class Sequence:
 
     def is_running(self) -> bool:
         return SequenceStatus.is_running(self.get_status())
+    
+    def num_tokens_to_finish(self) -> int:
+        return self.sampling_params.max_tokens - self.get_output_len()
 
     def reset_for_recompute(self):
         self.set_status(SequenceStatus.WAITING)
