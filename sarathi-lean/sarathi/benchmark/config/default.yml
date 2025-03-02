@@ -114,6 +114,7 @@ upgrade:
   required_blocks: 0  
   pages_per_block: 0  
   engine_type: old  
+  original_gpu_count: null
   
   # Pre-upgrade configuration
   drain_strategy: KICKOUT_IMMEDIATELY  

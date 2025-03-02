@@ -10,6 +10,7 @@ from sarathi.benchmark.request_generator.base_request_length_generator import (
 class UniformRequestLengthGenerator(BaseRequestLengthGenerator):
 
     def get_next_num_tokens(self) -> Tuple[float, float]:
+        self._random = random.Random(42)
         total_tokens = random.uniform(
             self._config.uniform_request_length_generator_min_tokens,
             self._config.uniform_request_length_generator_max_tokens,

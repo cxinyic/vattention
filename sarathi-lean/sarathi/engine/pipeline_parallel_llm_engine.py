@@ -93,6 +93,8 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
         self.inflight_batches_count = 0  # Track number of batches in pipeline
         self.should_stop = False
 
+        self.preemption_in_progress = False
+
     def _validate_parallel_config(self) -> None:
         assert self.parallel_config.pipeline_parallel_size > 1
 
@@ -108,10 +110,13 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
     @exit_on_error
     def _scheduler_timer_loop(self) -> None:
         while True:
-            time.sleep(SCHEDULER_LOOP_DELAY)
-            self.schedule_event.set()
             if self.should_stop:
                 break
+            time.sleep(SCHEDULER_LOOP_DELAY)
+            if self.stop_scheduling or self.preemption_in_progress:
+                continue
+            self.schedule_event.set()
+            
 
     def _get_worker_impl(self):
         # Lazy import the Worker to avoid importing torch.cuda/xformers
@@ -142,7 +147,9 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
             else:
                 preemption_queue = []
             self.scheduler.block_manager.set_free_blocks(min(outputs))
-            # logger.info(f"Free blocks: {outputs}")
+            # logger.info(f"Free blocks: {outputs}, len: {len(preemption_queue)}")
+            if len(preemption_queue) > 0:
+                self.preemption_in_progress = True
             scheduler_outputs = self.scheduler.schedule()
 
             if scheduler_outputs.has_no_output():
@@ -203,19 +210,22 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
                 ),  # TP rank zero for last pipeline stage
                 "get_output",
             )
+            if sampler_outputs["preemption_completed"]:
+                logger.info("Preemption completed")
+                self.preemption_in_progress = False
 
             # this needs to be optimized
             self._run_workers(
                 "on_sampling_completed",
                 scheduler_outputs=scheduler_stage_output.scheduler_outputs,
-                sampler_outputs=sampler_outputs,
+                sampler_outputs=sampler_outputs["output"],
                 seq_metadata_list=scheduler_stage_output.seq_metadata_list,
             )
             all_request_outputs = self._on_step_completed(
                 scheduler_stage_output.scheduler_outputs,
                 scheduler_stage_output.ignored_seqs,
                 scheduler_stage_output.seq_metadata_list,
-                sampler_outputs,
+                sampler_outputs["output"],
                 scheduler_stage_output.start_time,
             )
             self.schedule_event.set()
@@ -254,7 +264,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
             logger.info("Waiting for inflight batches to complete")
             time.sleep(0.1)
         self.should_stop = True
-        self._run_workers("cleanup_pp_worker",)
+        self._run_workers("cleanup_pp_worker",ignore_output=False)
         self.schedule_event.set()
         self.microbatch_watch_event.set()
 

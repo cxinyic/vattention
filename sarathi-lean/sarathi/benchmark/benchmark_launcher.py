@@ -250,7 +250,8 @@ class BenchmarkRunnerLauncher:
         logger.info(f"Replica resource mapping: {replica_resource_mapping}")
 
         return replica_resource_mapping
-        
+
+
     def _run_with_overlap_upgrade(self):
         """Run single replica upgrade with overlap serving."""
         upgrade_state = UpgradeState()
@@ -259,14 +260,17 @@ class BenchmarkRunnerLauncher:
 
         def init_new_runner():
             nonlocal new_runner
+            # Calculate new resource mapping based on new config
+            new_resource_mapping = self._get_replica_resource_mapping_for_config(self._new_config)
+            
             new_runner = BenchmarkRunner(
                 0, 
                 self._new_config, 
-                self.replica_resource_mapping["0"],
+                new_resource_mapping["0"],
                 is_new_runner=True
             )
             upgrade_state.set_weights_loaded()
-            logger.info("New runner initialized")
+            # logger.info(f"New runner initialized with resources: {new_resource_mapping['0']}")
 
         # Step 1: Set up upgrade state and start original runner
         self._runner.set_upgrade_state(upgrade_state)
@@ -309,7 +313,8 @@ class BenchmarkRunnerLauncher:
 
                 if new_runner is not None:
                     new_runner._llm_engine.init_rest()
-                    new_runner.load_progress(saved_progress)
+                    track = result["tracker"]
+                    new_runner.load_progress(saved_progress, track)
                     final_result = new_runner.run()
                     logger.info(f"New runner completed with status: {final_result}")
                 else:
@@ -322,24 +327,28 @@ class BenchmarkRunnerLauncher:
         
         if isinstance(result, dict) and result["status"] == "UPGRADE_NEEDED":
             progress = result["progress"]
+            track = result["tracker"]
             
             # Clean up Ray resources
             ray.shutdown()
             ray.init(ignore_reinit_error=True)
             
-            # Create new runner
+            # Calculate new resource mapping based on new config
+            new_resource_mapping = self._get_replica_resource_mapping_for_config(self._new_config)
+            
+            # Create new runner with the new resource mapping
             new_runner = BenchmarkRunner(
                 0, 
                 self._new_config, 
-                self.replica_resource_mapping["0"],
+                new_resource_mapping["0"],
                 is_new_runner=True
             )
-            new_runner.load_progress(progress)
+            new_runner.load_progress(progress, track)
             
             # Run second phase
             new_runner.run()
         wandb.finish()
-
+	
     def _run_normal(self):
         """Run without any upgrade."""
         result = self._runner.run()
@@ -360,3 +369,85 @@ class BenchmarkRunnerLauncher:
             logger.warning("Multi-replica upgrade not yet implemented")
             # TODO: Implement multi-replica upgrade support
             pass
+    
+    def _get_replica_resource_mapping_for_config(self, config: Config) -> ReplicaResourceMapping:
+        """
+        Get resource mapping for a specific config, with support for upgrade scenarios.
+        
+        Args:
+            config: The config to calculate resources for
+            
+        Returns:
+            Dictionary mapping replica IDs to resource lists
+        """
+        #TODO(XY): assume there is only one replica and it uses exactly pp*tp GPUs
+        # Use provided mapping if available
+        if config.replica_resource_mapping:
+            replica_resource_mapping = json.loads(config.replica_resource_mapping)
+            logger.info(f"Using provided replica resource mapping: {replica_resource_mapping}")
+            return replica_resource_mapping
+
+        # Get cluster resources
+        cluster_resources = ray.available_resources()
+        cluster_resources_keys = list(cluster_resources.keys())
+        num_gpus = cluster_resources.get("GPU", 0)
+        logger.info(f"Cluster resources num_gpus: {num_gpus}")
+        
+        # Get node IPs
+        ip_addresses = [
+            x
+            for x in cluster_resources_keys
+            if x.startswith("node:") and x != "node:__internal_head__"
+        ]
+
+        runner_ip = f"node:{get_ip()}"
+        logger.info(f"Runner IP: {runner_ip}, ip_addresses: {ip_addresses}")
+        
+        # Ensure the runner IP is first in the list
+        if runner_ip in ip_addresses:
+            ip_addresses.remove(runner_ip)
+        ip_addresses.insert(0, runner_ip)
+
+        num_nodes = len(ip_addresses)
+        assert num_nodes > 0, "No nodes found in the cluster"
+        assert num_gpus > 0, "No GPUs found in the cluster"
+        
+        # Calculate GPUs needed per replica
+        num_replicas = config.cluster_num_replicas
+        num_gpus_per_replica = (
+            config.model_tensor_parallel_degree
+            * config.model_pipeline_parallel_degree
+        )
+        
+        # Use num_gpus_per_replica directly for physical GPUs count
+        # This works because you know you have at least 4 GPUs available
+        total_physical_gpus_needed = num_gpus_per_replica * num_replicas
+                        
+        # Create available GPU list - create as many as we need
+        available_gpus = []
+        for ip_address in ip_addresses:
+            # Distribute GPUs evenly across nodes
+            gpus_per_node = total_physical_gpus_needed // num_nodes
+            if ip_address == ip_addresses[0]:  # First node gets any remainder
+                gpus_per_node += total_physical_gpus_needed % num_nodes
+                
+            for gpu_id in range(gpus_per_node):
+                available_gpus.append((ip_address, gpu_id))
+        
+        logger.info(f"Available GPUs for config {config.model_name}: {available_gpus}")
+        
+        # Assign GPUs to replicas
+        replica_resource_mapping = {}
+        
+        for replica_id in range(num_replicas):
+            replica_resource_mapping[str(replica_id)] = []
+            for _ in range(num_gpus_per_replica):
+                if available_gpus:
+                    node_ip, gpu_id = available_gpus.pop(0)
+                    # Store with the calculated GPU fraction
+                    replica_resource_mapping[str(replica_id)].append((node_ip, gpu_id))
+                else:
+                    raise ValueError(f"Not enough GPUs available for replica {replica_id}")
+
+        logger.info(f"Calculated replica resource mapping for {config.model_name}: {replica_resource_mapping}")
+        return replica_resource_mapping

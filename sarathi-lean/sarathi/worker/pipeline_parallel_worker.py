@@ -100,7 +100,9 @@ class PipelineParallelWorker(BaseWorker):
     def _execution_loop(self) -> None:
         torch.cuda.set_device(self.device)
 
-        while not getattr(self, 'should_stop', False):
+        while True:
+            if self.should_stop:
+                break
             # Get both scheduler outputs and any preempted sequences
             work_item = self.execution_queue.get()
             
@@ -110,14 +112,24 @@ class PipelineParallelWorker(BaseWorker):
                 
             scheduler_outputs = work_item["scheduler_outputs"]
             preempted_seq = work_item.get("preempted_seq", [])
-
+            is_preempted_seq_empty = len(preempted_seq) == 0
             output = self.execute_model(scheduler_outputs, preempted_seq)
 
             if not self.is_tensor_parallel_rank_zero:
                 continue
-
-            if self.is_first_pipeline_stage or self.is_last_pipeline_stage:
-                self.output_queue.put(output)
+            if not is_preempted_seq_empty and self.is_last_pipeline_stage:
+                output_package = {
+                    "output": output,
+                    "preemption_completed": True
+                }
+                self.output_queue.put(output_package)
+            else:
+                if self.is_first_pipeline_stage or self.is_last_pipeline_stage:
+                    output_package = {
+                        "output": output,
+                        "preemption_completed": False
+                    }
+                    self.output_queue.put(output_package)
         
         logger.info(f"Execution loop stopped on rank {self.local_rank}")
 
@@ -128,12 +140,14 @@ class PipelineParallelWorker(BaseWorker):
     def get_model_parallel_ranks(self) -> Tuple[int, int]:
         return self.tensor_model_parallel_rank, self.pipeline_model_parallel_rank
 
-    def cleanup_pp_worker(self):
+    @synchronized
+    def cleanup_pp_worker(self) -> None:
         """Cleanup worker resources including execution thread and queues"""
         logger.info(f"Cleaning up worker on rank {self.local_rank}")
         
         # Signal thread to stop
         self.should_stop = True  
+        self.execution_queue.put(None)
         # Clear the queues
         try:
             while not self.execution_queue.empty():

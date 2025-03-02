@@ -13,7 +13,7 @@ class vAttentionBlockSpaceManager():
         block_size: int,
         num_gpu_blocks: int,
         max_model_len: int,
-        watermark: float = 0.01,
+        watermark: float = 0.02,
     ) -> None:
         self.block_size = block_size 
         self.num_total_gpu_blocks = num_gpu_blocks
@@ -56,7 +56,8 @@ class vAttentionBlockSpaceManager():
         # return (num_free_gpu_blocks - self.promised_blocks) > 0
         # return True
         # return self.free_blocks > self.promised_blocks *1.1
-        return self.free_blocks - self.promised_blocks > 0
+        # return self.free_blocks - self.promised_blocks > 0
+        return self.free_blocks - self.promised_blocks >= self.watermark_blocks
         
 
     def append_slot(self, seq: Sequence) -> None:

@@ -170,7 +170,7 @@ def calculate_required_blocks(
     new_model_memory_per_gpu = new_params_per_gpu * bytes_per_param
     
     # Not Add safety margin (10% for optimizer states, gradients, etc.)
-    safety_margin = 1
+    safety_margin = 1.1
     required_memory = new_model_memory_per_gpu * safety_margin
     
     # Calculate number of blocks needed

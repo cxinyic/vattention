@@ -531,6 +531,7 @@ class UpgradeConfig:
         required_blocks: int = None,
         pages_per_block: int = None,
         engine_type: str = "old",
+        original_gpu_count: int = None,
         
         # Pre-upgrade options (relevant only if strategy != NO_UPGRADE)
         drain_strategy: UpgradeStrategy.DrainStrategy = UpgradeStrategy.DrainStrategy.WAIT_THEN_KICKOUT,
@@ -550,6 +551,7 @@ class UpgradeConfig:
         self.required_blocks = required_blocks
         self.pages_per_block = pages_per_block
         self.engine_type = engine_type
+        self.original_gpu_count = original_gpu_count
         
         # Pre-upgrade configuration
         self.drain_strategy = drain_strategy
@@ -575,6 +577,11 @@ class UpgradeConfig:
         """Whether overlap serving is enabled during upgrade"""
         return (self.strategy == UpgradeStrategy.Mode.UPGRADE and 
                 self.serving_strategy != UpgradeStrategy.ServingStrategy.NO_SERVE)
+    
+    @property
+    def is_gpu_expansion(self) -> bool:
+        """Whether this upgrade involves GPU expansion"""
+        return self.original_gpu_count is not None
     
     def _verify_args(self) -> None:
         """Verify the arguments."""

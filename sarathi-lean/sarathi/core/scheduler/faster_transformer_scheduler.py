@@ -28,9 +28,6 @@ class FasterTransformerScheduler(BaseScheduler):
     def get_block_space_manager_class(self):
         return FasterTransformerBlockSpaceManager
 
-    def _schedule_upgrade(self) -> SchedulerOutputs:
-        pass
-    
     def _schedule(self) -> SchedulerOutputs:
         scheduled_seq_metadata_list: List[SequenceScheduleMetadata] = []
 

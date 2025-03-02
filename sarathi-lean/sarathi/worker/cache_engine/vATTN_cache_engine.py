@@ -29,6 +29,7 @@ class vATTNCacheEngine(BaseCacheEngine):
         parallel_config: ParallelConfig,
         mem_alloc_backend: str,
     ) -> None:
+        # vattention.set_verbose(True)
         self.max_batch_size = cache_config.max_batch_size
         self.device = torch.empty(1).cuda().device if not in_wsl() else torch.device("cuda")
         self.device_idx = int(str(self.device).split(":")[-1])
@@ -79,6 +80,7 @@ class vATTNCacheEngine(BaseCacheEngine):
         return cache_list
 
     def preempt_requests(self, preempted_seq: List[int]) -> None:
+        logger.info(f"Preempting seq_ids {[seq.seq_id for seq in preempted_seq]}")
         for seq in preempted_seq:
             self.free_request(seq.seq_id)
 
@@ -116,6 +118,7 @@ class vATTNCacheEngine(BaseCacheEngine):
                 b_idx_gen.append(new_batch_idx)
 
         if self.vattn_async:
+            # logger.info(f"vATTN async step, curr_seq_lens: {self.curr_seq_lens}, b_idx_prompt: {b_idx_prompt}, b_idx_gen: {b_idx_gen}")
             vattention.step_async(self.curr_seq_lens)
         else:
             vattention.step(self.curr_seq_lens, True)

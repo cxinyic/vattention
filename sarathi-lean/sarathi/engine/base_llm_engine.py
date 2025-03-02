@@ -200,6 +200,11 @@ class BaseLLMEngine:
 
         driver_ip = None
         for rank, (node_ip, _) in enumerate(replica_resource_mapping):
+            if self.upgrade_engine_type == "new":
+                if self.upgrade_config.is_gpu_expansion:
+                    if rank >= self.upgrade_config.original_gpu_count:
+                        logger.info(f"Rank {rank} is a new GPU, setting GPU allocation to 0.51")
+                        gpu_allocation = 0.51
             worker_class = ray.remote(
                 # num_cpus=1,
                 num_gpus=gpu_allocation, # we don't use ray for managing GPUs

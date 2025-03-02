@@ -71,20 +71,20 @@ class BenchmarkRunner:
             self._time_limit = float("inf")
 
         # Determine output directory based on upgrade strategy
-        base_output_dir = f"{self._config.output_dir}/replica_{replica_id}"
-        if self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY:
-            base_output_dir = f"{base_output_dir}/decode_upgrade"
-            if self._is_new_runner:
-                base_output_dir = f"{base_output_dir}_new"
-        elif self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY:
-            base_output_dir = f"{base_output_dir}/prefill_upgrade"
-            if self._is_new_runner:
-                base_output_dir = f"{base_output_dir}_new"
-        elif self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
-            base_output_dir = f"{base_output_dir}/basic_upgrade"
-        else:
-            base_output_dir = f"{base_output_dir}/no_upgrade"
-        
+        # base_output_dir = f"{self._config.output_dir}/replica_{replica_id}"
+        # if self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY:
+        #     base_output_dir = f"{base_output_dir}/decode_upgrade"
+        #     if self._is_new_runner:
+        #         base_output_dir = f"{base_output_dir}_new"
+        # elif self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY:
+        #     base_output_dir = f"{base_output_dir}/prefill_upgrade"
+        #     if self._is_new_runner:
+        #         base_output_dir = f"{base_output_dir}_new"
+        # elif self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
+        #     base_output_dir = f"{base_output_dir}/basic_upgrade"
+        # else:
+        #     base_output_dir = f"{base_output_dir}/no_upgrade"
+        base_output_dir = self._config.output_dir
         output_dir = base_output_dir
         logger.info(f"Output directory: {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
@@ -158,10 +158,11 @@ class BenchmarkRunner:
             keep_individual_batch_metrics=self._config.metrics_store_keep_individual_batch_metrics,
             trust_remote_code=True,
             time=self._config.upgrade_time,
-            strategy=self._config.upgrade_serving_strategy,
+            strategy=self._config.upgrade_strategy,
             required_blocks=self._config.upgrade_required_blocks,
             pages_per_block=self._config.pages_per_block,
             engine_type=upgrade_engine_type,
+            original_gpu_count=self._config.upgrade_original_gpu_count,
             drain_strategy=self._config.upgrade_drain_strategy,
             drain_timeout=self._config.upgrade_drain_timeout,
             kickout_strategy=self._config.upgrade_kickout_strategy,
@@ -174,8 +175,10 @@ class BenchmarkRunner:
         if not self._is_new_runner or self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
             self._llm_engine.init_rest()
         
-        self._latency_tracker = LatencyTracker(output_dir)
+        if not self._is_new_runner:
+            self._latency_tracker = LatencyTracker(output_dir)
         self.is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
+        
 
     def set_upgrade_state(self, upgrade_state: UpgradeState) -> None:
         """Set the upgrade state object for coordination during upgrade."""
@@ -245,6 +248,7 @@ class BenchmarkRunner:
         """Update internal state tracking for a request."""
         current_time = time.monotonic()
         seq_id = str(output.seq_id)  # Convert to string for consistent key type
+
         
         if seq_id not in self._request_states:
             # If somehow we don't have state for this request, initialize it
@@ -256,10 +260,17 @@ class BenchmarkRunner:
                 'current_token_ids': [],
                 'finished': False,
                 'original_request': self._requests[int(seq_id)],
-                'start_time': time.monotonic()
+                'start_time': time.monotonic(),
+                'token_generation_start_time': time.monotonic(),  # Initialize token time tracking
+                'prev_token_count': 0,  # Track previous token count explicitly
             }
         
-        self._request_states[seq_id] = {
+        # Get previous state
+        prev_state = self._request_states[seq_id]
+        prev_token_count = len(prev_state.get('current_token_ids', []))
+        
+        # Update the request state with new information
+        updated_state = {
             'seq_id': seq_id,
             'prompt': output.prompt,
             'prompt_token_ids': output.prompt_token_ids,
@@ -268,29 +279,100 @@ class BenchmarkRunner:
             'finished': output.finished,
             'finish_reason': output.finish_reason,
             'original_request': self._requests[int(seq_id)],
-            'start_time': self._request_states[seq_id]['start_time']  # Preserve start time
+            'start_time': prev_state['start_time'],  # Preserve start time
+            'prev_token_count': prev_token_count,  # Store previous token count
         }
+        
+        # Copy over existing metrics if present
+        if 'ttft' in prev_state:
+            updated_state['ttft'] = prev_state['ttft']
+        if 'tpot_sum' in prev_state:
+            updated_state['tpot_sum'] = prev_state['tpot_sum']
+        if 'tpot_samples' in prev_state:
+            updated_state['tpot_samples'] = prev_state['tpot_samples']
+        if 'token_generation_start_time' in prev_state:
+            updated_state['token_generation_start_time'] = prev_state['token_generation_start_time']
+                
+        # Check if this update produced the first token
+        is_first_token = prev_token_count == 0 and 'ttft' not in prev_state
+        
+        # Record TTFT if this is the first token
+        if is_first_token:
+            ttft = current_time - updated_state['start_time']
+            updated_state['ttft'] = ttft
+            logger.info(f"Request {seq_id} generated first token, TTFT: {ttft:.4f} seconds")
+            # Log TTFT in the latency tracker
+            self._latency_tracker.log_ttft(seq_id, ttft)
+        
+        # Calculate TPOT if new tokens were generated
+        else:
+            # Time since last token generation or since start if this is the first update
+            generation_time = current_time - updated_state['token_generation_start_time']
 
+            # Update running average for TPOT
+            if 'tpot_sum' in updated_state:
+                updated_state['tpot_sum'] += generation_time
+                updated_state['tpot_samples'] += 1
+            else:
+                updated_state['tpot_sum'] = generation_time
+                updated_state['tpot_samples'] = 1
+        
+        # Update token generation start time for next calculation
+        updated_state['token_generation_start_time'] = current_time
+        
+        # Update request state with our changes
+        self._request_states[seq_id] = updated_state
+        
         if output.finished:
-            self._request_states[seq_id]['end_time'] = current_time
-            latency = current_time - self._request_states[seq_id]['start_time']
-            self._request_states[seq_id]['latency'] = latency
-            self._finished_requests[seq_id] = self._request_states[seq_id]
+            # Record completion time
+            updated_state['end_time'] = current_time
+            latency = current_time - updated_state['start_time']
+            updated_state['latency'] = latency
+            
+            # Calculate final TPOT if we have samples
+            if 'tpot_samples' in updated_state and updated_state['tpot_samples'] > 0:
+                final_tpot = updated_state['tpot_sum'] / updated_state['tpot_samples']
+                updated_state['tpot'] = final_tpot
+                # Log TPOT in the latency tracker
+                self._latency_tracker.log_tpot(seq_id, final_tpot)
+                logger.info(f"Request {seq_id} final TPOT: {final_tpot:.4f} seconds per token")
+            else:
+                # If no tokens were generated or tracking failed, set TPOT to 0
+                updated_state['tpot'] = 0.0
+                self._latency_tracker.log_tpot(seq_id, 0.0)
+                logger.info(f"Request {seq_id} couldn't calculate TPOT (no tokens or no samples)")
+            
+            # Handle case where TTFT wasn't recorded (very fast completion or other issue)
+            if 'ttft' not in updated_state:
+                # Use a reasonable default - could be the full latency or a fraction of it
+                # Here we use the full latency with a note
+                ttft = latency
+                updated_state['ttft'] = ttft
+                self._latency_tracker.log_ttft(seq_id, ttft)
+                logger.info(f"Request {seq_id} completed without recording TTFT, using completion time: {ttft:.4f}s")
+            
+            # Update final state
+            self._request_states[seq_id] = updated_state
+            self._finished_requests[seq_id] = updated_state
             if seq_id in self._pending_requests:
                 del self._pending_requests[seq_id]
             
-            # Log the latency
+            # Log the end-to-end latency
             self._latency_tracker.log_latency(seq_id, latency)
             
-            # Log the latency
-            logger.info(f"Request {seq_id} completed with latency: {self._request_states[seq_id]['latency']:.4f} seconds, with reason: {output.finish_reason}")
+            # Log completion with all metrics
+            logger.info(f"Request {seq_id} completed with latency: {latency:.4f} seconds, "
+                        f"TTFT: {updated_state['ttft']:.4f} seconds, "
+                        f"TPOT: {updated_state.get('tpot', 0.0):.4f} seconds per token, "
+                        f"reason: {output.finish_reason}")
         else:
-            self._pending_requests[seq_id] = self._request_states[seq_id]   
+            # For ongoing requests, update the pending queue
+            self._pending_requests[seq_id] = updated_state
 
     def run_during_upgrade(self) -> dict:
         """Continue running with reduced capacity during upgrade."""
         self._llm_engine.scheduler.set_upgrade()
-        
+        logger.info("Starting serving during upgrade")
         num_processed_requests = 0
         num_steps = 0
         pbar = tqdm(
@@ -315,8 +397,8 @@ class BenchmarkRunner:
             self._llm_engine.signal_stop_scheduling()
             logger.info("Stopping pipeline engine execution loops")
         pbar.close()
-        progress = self.save_progress()
-        return {"status": "READY_FOR_HANDOVER", "progress": progress}
+        progress, tracker = self.save_progress()
+        return {"status": "READY_FOR_HANDOVER", "progress": progress, "tracker": tracker}
 
     def _run_normal(self) -> str:
         """Original run logic until upgrade needed or completion."""
@@ -324,9 +406,12 @@ class BenchmarkRunner:
             self._llm_engine.start_profiling()
 
         num_processed_requests = 0
+        for request in self._requests:
+            if request == None:
+                num_processed_requests += 1
         num_steps = 0
         pbar = tqdm(
-            total=len(self._requests),
+            total=len(self._requests)-num_processed_requests,
             desc=f"Replica {self._replica_id} processed requests",
         )
         start_time = time.monotonic()
@@ -410,52 +495,82 @@ class BenchmarkRunner:
 
         if self._config.enable_profiling:
             self._llm_engine.stop_profiling()
+        
+        self._latency_tracker.export_latencies()
+        stats = self._latency_tracker.get_statistics()
+        logger.info("Latency Statistics:")
+        for key, value in stats.items():
+            logger.info(f"{key}: {value:.2f}s")
 
         return "COMPLETED"
 
-    def save_progress(self) -> dict:
-        """Save the current progress of requests."""
+    def save_progress(self) -> tuple:
+        """Save the current progress of requests, including timing metrics."""
         progress = {
             'finished_requests': {},
             'pending_requests': {},
         }
         
-        # Save finished requests with their latencies
+        # Save finished requests with their latencies and timing metrics
         for seq_id, state in self._finished_requests.items():
             progress['finished_requests'][seq_id] = {
                 'prompt': state['prompt'],
                 'prompt_token_ids': state['prompt_token_ids'],
                 'generated_text': state['current_text'],
                 'generated_token_ids': state['current_token_ids'],
-                'latency': state.get('latency', None)
+                'latency': state.get('latency', None),
+                'ttft': state.get('ttft', None),  # Save Time To First Token
+                'tpot': state.get('tpot', None)   # Save Time Per Output Token
             }
+            logger.info(f"Saving progress for finished request {seq_id}, latency is {state.get('latency', None)}, ttft is {state.get('ttft', None)}, tpot is {state.get('tpot', None)}")
         
-        # Save pending requests with their start times
+        # Save pending requests with their timing metrics for continued tracking
         for seq_id, state in self._pending_requests.items():
             logger.info(f"Saving progress for pending request {seq_id}, prompt_token_ids is {len(state['prompt_token_ids'])}, generated_token_ids_so_far is {len(state['current_token_ids'])}")
-            progress['pending_requests'][seq_id] = {
+            
+            # Basic request info
+            pending_info = {
                 'prompt': state['prompt'],
                 'prompt_token_ids': state['prompt_token_ids'],
                 'generated_text_so_far': state['current_text'],
                 'generated_token_ids_so_far': state['current_token_ids'],
                 'original_request': state['original_request'],
-                'start_time': state['start_time']  # Include start time for continuing latency tracking
+                'start_time': state['start_time']  # Original start time for continued latency tracking
             }
+            
+            # Add timing metrics if they exist
+            if 'ttft' in state:
+                pending_info['ttft'] = state['ttft']
+                
+            # Save TPOT calculation state
+            if 'tpot_sum' in state:
+                pending_info['tpot_sum'] = state['tpot_sum']
+                pending_info['tpot_samples'] = state['tpot_samples']
+                
+            # Save last token generation timestamp
+            if 'token_generation_start_time' in state:
+                # Store as relative time (seconds since start) rather than absolute timestamp
+                # This makes it easier to restore properly when loading
+                token_gen_relative_time = state['token_generation_start_time'] - state['start_time']
+                pending_info['token_generation_relative_time'] = token_gen_relative_time
+            
+            progress['pending_requests'][seq_id] = pending_info
         
-        return progress
+        return progress, self._latency_tracker
     
-    def load_progress(self, progress: dict) -> None:
-        """Load saved progress to resume requests."""
+    def load_progress(self, progress: dict, track: LatencyTracker) -> None:
+        """Load saved progress to resume requests, preserving timing metrics."""
         if progress is None:
             return
-                
+        self._latency_tracker = track
+                    
         self._finished_requests = {}
         self._pending_requests = {}
         self._requests = []  # Initialize requests list
         
-        # Restore finished requests state with their latencies
+        # Restore finished requests state with their latencies and timing metrics
         for seq_id, state in progress['finished_requests'].items():
-            self._finished_requests[seq_id] = {
+            finished_state = {
                 'seq_id': seq_id,
                 'prompt': state['prompt'],
                 'prompt_token_ids': state['prompt_token_ids'],
@@ -464,17 +579,99 @@ class BenchmarkRunner:
                 'finished': True,
                 'latency': state['latency']  # Keep original latency
             }
+            
+            # Restore timing metrics if available
+            if 'ttft' in state:
+                finished_state['ttft'] = state['ttft']
+                # Also log to the latency tracker
+                self._latency_tracker.log_ttft(seq_id, state['ttft'])
+                
+            if 'tpot' in state:
+                finished_state['tpot'] = state['tpot']
+                # Also log to the latency tracker
+                self._latency_tracker.log_tpot(seq_id, state['tpot'])
+            
+            self._finished_requests[seq_id] = finished_state
             # Add to requests list to maintain correct total count
             self._requests.append(None)  # Placeholder for finished request
         
-        # For pending (executed but unfinished) requests, modify prompt to include generated tokens
+        # Get the reschedule policy from the engine
+        reschedule_policy = self._llm_engine.upgrade_config.reschedule_policy
+        
+        # Organize pending requests based on policy
+        pending_list = []
         for seq_id, state in progress['pending_requests'].items():
             request = state['original_request']
-            original_start_time = state['start_time']  # Get original start time
+            original_start_time = state['start_time']
+            # Use arrival_time from request, fall back to start_time if not available
+            original_arrival_time = getattr(request, 'arrival_time', original_start_time)
+            
+            # Add to pending list with information needed for sorting
+            pending_list.append({
+                'seq_id': seq_id,
+                'state': state,
+                'request': request,
+                'original_start_time': original_start_time,
+                'original_arrival_time': original_arrival_time,
+                'generated_tokens_count': len(state['generated_token_ids_so_far'])
+            })
+        
+        # Sort based on reschedule policy
+        if reschedule_policy == UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME:
+            # Sort by original arrival time (earlier requests first)
+            pending_list.sort(key=lambda x: x['original_arrival_time'])
+            logger.info("Sorting pending requests by original arrival time")
+        elif reschedule_policy == UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS:
+            # Sort by number of generated tokens (fewer first), then by arrival time
+            # This prioritizes requests with less prefill progress
+            pending_list.sort(key=lambda x: (x['generated_tokens_count'], x['original_arrival_time']))
+            logger.info("Sorting pending requests by prefill progress (less progress first), then arrival time")
+        
+        # Process sorted pending requests
+        current_time = time.monotonic()
+        for item in pending_list:
+            seq_id = item['seq_id']
+            state = item['state']
+            request = item['request']
+            original_start_time = item['original_start_time']
+            
             # Add request to the requests list
             self._requests.append(request)
             
             logger.info(f"Resuming request {seq_id} with generated tokens {len(state['generated_token_ids_so_far'])}")
+            
+            # Prepare the new request state
+            new_request_state = {
+                'seq_id': seq_id,
+                'prompt': state['prompt'],
+                'current_text': state['generated_text_so_far'],
+                'current_token_ids': state['generated_token_ids_so_far'],
+                'finished': False,
+                'original_request': request,
+                'start_time': original_start_time  # Preserve original start time
+            }
+            
+            # Restore TTFT if it was already calculated
+            if 'ttft' in state:
+                new_request_state['ttft'] = state['ttft']
+                # Also log to the latency tracker
+                self._latency_tracker.log_ttft(seq_id, state['ttft'])
+            
+            # Restore TPOT calculation state if available
+            if 'tpot_sum' in state and 'tpot_samples' in state:
+                new_request_state['tpot_sum'] = state['tpot_sum']
+                new_request_state['tpot_samples'] = state['tpot_samples']
+            
+            # Restore token generation timestamp with appropriate adjustment
+            if 'token_generation_relative_time' in state:
+                # Convert relative time back to absolute time based on the original start time
+                token_gen_time = original_start_time + state['token_generation_relative_time']
+                # But we need to adjust this to be relative to the current time
+                # This is to avoid unrealistically large time gaps in token generation
+                # due to the time spent during the upgrade
+                adjusted_token_gen_time = current_time - (token_gen_time - original_start_time)
+                new_request_state['token_generation_start_time'] = adjusted_token_gen_time
+            
             if len(state['generated_token_ids_so_far']) > 0:  # If request was partially executed
                 # Combine original prompt tokens with generated tokens as new prompt
                 new_prompt_token_ids = state['prompt_token_ids'] + state['generated_token_ids_so_far']
@@ -484,44 +681,43 @@ class BenchmarkRunner:
                     temperature=0,
                     top_p=1.0,
                 )
+
                 self._llm_engine.add_request(
                     prompt=None,
                     prompt_token_ids=new_prompt_token_ids,
                     sampling_params=sampling_params,
-                    arrival_time=time.monotonic()
+                    arrival_time=new_request_state['start_time'],
+                    seq_id=seq_id
                 )
                 
-                # Initialize request state preserving start time
-                self._request_states[seq_id] = {
-                    'seq_id': seq_id,
-                    'prompt': state['prompt'],
-                    'prompt_token_ids': new_prompt_token_ids,
-                    'current_text': state['generated_text_so_far'],
-                    'current_token_ids': state['generated_token_ids_so_far'],
-                    'finished': False,
-                    'original_request': request,
-                    'start_time': original_start_time  # Preserve original start time
-                }
+                # Update prompt tokens in request state
+                new_request_state['prompt_token_ids'] = new_prompt_token_ids
             else:  # For never executed requests, add original request
+                sampling_params = SamplingParams(
+                    ignore_eos=True,
+                    max_tokens=request.num_decode_tokens,
+                    temperature=0,
+                    top_p=1.0,
+                )
+                prompt_token_ids = [1] * request.num_prefill_tokens
+
+
                 self._llm_engine.add_request(
-                    **self._get_input_params(request, time.monotonic())
+                    prompt=None,
+                    prompt_token_ids=prompt_token_ids,
+                    sampling_params=sampling_params,
+                    arrival_time=new_request_state['start_time'],
+                    seq_id=seq_id
                 )
                 
-                # Initialize request state with original start time
-                self._request_states[seq_id] = {
-                    'seq_id': seq_id,
-                    'prompt': state['prompt'],
-                    'prompt_token_ids': state['prompt_token_ids'],
-                    'current_text': "",
-                    'current_token_ids': [],
-                    'finished': False,
-                    'original_request': request,
-                    'start_time': original_start_time  # Preserve original start time
-                }
+                # Use original prompt tokens
+                new_request_state['prompt_token_ids'] = state['prompt_token_ids']
             
+            # Store the updated request state
+            self._request_states[seq_id] = new_request_state
             # Add to pending queue
-            self._pending_requests[seq_id] = self._request_states[seq_id]
-            
+            self._pending_requests[seq_id] = new_request_state
+                
         logger.info(f"Loaded progress with {len(self._finished_requests)} finished requests and {len(self._pending_requests)} pending requests")
         logger.info(f"Total requests in self._requests: {len(self._requests)}")
 
@@ -530,6 +726,8 @@ class BenchmarkRunner:
         self._llm_engine.reset_metrics()
         if not self._is_new_runner:
             self._add_requests()
+        else:
+            return self._run_normal()
 
         if self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY or self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY:
             return self._run_with_overlap()
@@ -552,13 +750,7 @@ class BenchmarkRunner:
             self.upgrade_state.set_preemption_complete()
             return {"status": "UPGRADE_NEEDED"}
 
-        if status == "COMPLETED":
-            self._latency_tracker.plot_cdf()
-            stats = self._latency_tracker.get_statistics()
-            logger.info("Latency Statistics:")
-            for key, value in stats.items():
-                logger.info(f"{key}: {value:.2f}s")
-            
+        if status == "COMPLETED":            
             self._llm_engine.cleanup()
             return "COMPLETED"
 
@@ -567,10 +759,10 @@ class BenchmarkRunner:
         status = self._run_normal()
 
         if status == "UPGRADE_NEEDED":
-            progress = self.save_progress()
+            progress, tracker = self.save_progress()
             metrics = self._llm_engine.get_metric_store()
             self._llm_engine.cleanup()
-            return {"status": "UPGRADE_NEEDED", "progress": progress, "metrics": metrics}
+            return {"status": "UPGRADE_NEEDED", "progress": progress, "tracker": tracker}
 
         self._llm_engine.pull_worker_metrics()
         metric_store = self._llm_engine.get_metric_store()

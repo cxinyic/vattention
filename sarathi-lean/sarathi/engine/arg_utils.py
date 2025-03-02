@@ -81,6 +81,7 @@ class EngineArgs:
     required_blocks: int = None
     pages_per_block: int = None
     engine_type: str = "old"
+    original_gpu_count: int = None
     drain_strategy: UpgradeStrategy.DrainStrategy = None
     drain_timeout: Optional[float] = None
     kickout_strategy: UpgradeStrategy.KickoutStrategy = None
@@ -214,6 +215,7 @@ class EngineArgs:
         )
         logger.info(f"strategy: {self.strategy}")
         logger.info(f"upgrade_time: {self.time}")
+        logger.info(f"original_gpu_count: {self.original_gpu_count}")
         logger.info(f"required_blocks: {self.required_blocks}")
         logger.info(f"pages_per_block: {self.pages_per_block}")
         upgrade_config = UpgradeConfig(
@@ -222,6 +224,7 @@ class EngineArgs:
             required_blocks=self.required_blocks,
             pages_per_block=self.pages_per_block,
             engine_type=self.engine_type,
+            original_gpu_count = self.original_gpu_count,
             drain_strategy=self.drain_strategy,
             drain_timeout=self.drain_timeout,
             kickout_strategy=self.kickout_strategy,

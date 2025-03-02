@@ -101,10 +101,6 @@ class BaseScheduler(ABC):
     def _schedule(self) -> SchedulerOutputs:
         pass
 
-    @abstractmethod
-    def _schedule_upgrade(self) -> SchedulerOutputs:
-        pass
-
     def schedule(self) -> SchedulerOutputs:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
@@ -121,12 +117,8 @@ class BaseScheduler(ABC):
         
         scheduler_outputs = None
         scheduler_outputs = self._schedule()
-        # if not self._during_upgrade:
-        #     scheduler_outputs = self._schedule()
-        # else:
-        #     scheduler_outputs = self._schedule_upgrade()
-        
 
+    
         if not scheduler_outputs.is_empty():
             self.num_running_batches += 1
 
