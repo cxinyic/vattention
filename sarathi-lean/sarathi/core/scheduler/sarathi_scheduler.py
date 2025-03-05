@@ -1,5 +1,5 @@
 import time
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 
@@ -298,7 +298,7 @@ class SarathiScheduler(BaseScheduler):
         )
  
     def select_preemption_sequences(self, required_blocks: int, strategy: str = 'partial', 
-                            selection_policy: UpgradeStrategy.SelectionPolicy = UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME) -> List[Sequence]:
+                            selection_policy: UpgradeStrategy.SelectionPolicy = UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME) -> Tuple[int, List[Sequence], List[Sequence]]:
         """Select sequences for preemption based on strategy and policy.
         
         Args:
@@ -312,23 +312,34 @@ class SarathiScheduler(BaseScheduler):
                 - BY_KV_CACHE_SIZE: Select sequences using the most KV cache memory
         
         Returns:
-            Tuple[List[Sequence], List[Sequence]]: For partial strategy: (sequences_to_preempt, [])
-                                                  For full strategy: (sequences_for_physical_free, sequences_for_virtual_free)
+            Tuple[int, List[Sequence], List[Sequence]]: 
+                - Number of free blocks to use
+                - For partial strategy: (sequences_to_preempt, [])
+                - For full strategy: (sequences_for_physical_free, sequences_for_virtual_free)
         """
         assert strategy in ['partial', 'full'], f"Invalid strategy: {strategy}"
         self.preemption_strategy = strategy
         self.upgrade_required_blocks = required_blocks
         
         if required_blocks <= 0:
-            return [], []
+            return 0, [], []
         
+        # Get current free blocks and watermark
         current_free_blocks = self.block_manager.get_num_free_gpu_blocks()
-        logger.info(f"Free blocks number is {current_free_blocks}")
-        if current_free_blocks >= required_blocks:
-            logger.info(f"Enough free blocks, no need to preempt")
-            return [], []
-
+        watermark_blocks = self.block_manager.get_watermark_blocks()
+        available_free_blocks = max(0, current_free_blocks - watermark_blocks)
+        
+        logger.info(f"Free blocks: {current_free_blocks}, Watermark: {watermark_blocks}, Available: {available_free_blocks}")
+        
+        # If we have enough free blocks without preemption
+        if available_free_blocks >= required_blocks:
+            logger.info(f"Enough free blocks available, no need to preempt")
+            return required_blocks, [], []
+        
+        # We need to use preemption to get additional blocks
+        blocks_to_free = required_blocks - available_free_blocks
         freed_blocks = 0
+        blocks_to_use_from_free = available_free_blocks
         sequences_for_physical_free = []
         sequences_for_virtual_free = []
         
@@ -353,7 +364,7 @@ class SarathiScheduler(BaseScheduler):
         
         if strategy == 'partial':
             # Buffer for partial strategy
-            required_blocks += 1
+            blocks_to_free += 1
 
             # For partial strategy, just free enough blocks
             for seq in running_sequences:
@@ -361,19 +372,19 @@ class SarathiScheduler(BaseScheduler):
                     seq_blocks = self.block_manager.get_num_blocks(seq)
                 else:
                     logger.error("Incorrect block manager type for upgrade")
-                    return [], []
+                    return blocks_to_use_from_free, [], []
 
                 freed_blocks += seq_blocks
                 sequences_for_physical_free.append(seq)
                 logger.info(f"Selected sequence {seq.seq_id} for preemption (policy: {selection_policy.name}), frees {seq_blocks} blocks")
 
-                if freed_blocks >= required_blocks:
+                if freed_blocks >= blocks_to_free:
                     break
 
         else:  # full strategy
             # Keep adding to physical_free until we meet required_blocks
             for seq in running_sequences:
-                if freed_blocks < required_blocks:
+                if freed_blocks < blocks_to_free:
                     # Need more blocks, add to physical free
                     if type(self.block_manager) == vAttentionBlockSpaceManager:
                         seq_blocks = self.block_manager.get_num_blocks(seq)
@@ -385,7 +396,8 @@ class SarathiScheduler(BaseScheduler):
                     sequences_for_virtual_free.append(seq)
                     logger.info(f"Selected sequence {seq.seq_id} for virtual memory free (policy: {selection_policy.name})")
 
-        logger.info(f"Strategy: {strategy}, Policy: {selection_policy.name}, Total blocks freed: {freed_blocks}, Required: {required_blocks}")
+        logger.info(f"Strategy: {strategy}, Policy: {selection_policy.name}")
+        logger.info(f"Using {blocks_to_use_from_free} free blocks, Freeing {freed_blocks} blocks through preemption")
         logger.info(f"Physical free sequences: {len(sequences_for_physical_free)}, Virtual free sequences: {len(sequences_for_virtual_free)}")
 
         # Update preempted sequence IDs for all sequences
@@ -406,4 +418,4 @@ class SarathiScheduler(BaseScheduler):
             preempted_seq_ids = {seq.seq_id for seq in sequences_for_physical_free}
             self.running = [seq for seq in self.running if seq.seq_id not in preempted_seq_ids]
                   
-        return sequences_for_physical_free, sequences_for_virtual_free
+        return blocks_to_use_from_free, sequences_for_physical_free, sequences_for_virtual_free

@@ -98,6 +98,9 @@ class vAttentionBlockSpaceManager():
     
     def get_num_free_gpu_blocks(self) -> int:
         return self.free_blocks
+    
+    def get_watermark_blocks(self) -> int:
+        return self.watermark_blocks
 
 
 # class BaseBlockSpaceManager(ABC):

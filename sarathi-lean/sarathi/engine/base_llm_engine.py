@@ -568,26 +568,29 @@ class BaseLLMEngine:
         if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
             # The only difference between decode and prefill is the preemption_mode
             preemption_mode = "partial" if self.upgrade_config.serving_strategy == UpgradeStrategy.ServingStrategy.DECODE_ONLY else "full"
-            sequences_for_physical_free, sequences_for_virtual_free = self.scheduler.select_preemption_sequences(required_blocks, preemption_mode, self.upgrade_config.selection_policy)
+            free_blocks_to_use, sequences_for_physical_free, sequences_for_virtual_free = self.scheduler.select_preemption_sequences(required_blocks, preemption_mode, self.upgrade_config.selection_policy)
+            
+            logger.info(f"Using {free_blocks_to_use} free blocks and preempting {len(sequences_for_physical_free)} sequences")
         else:
             logger.error("Incorrect block manager type for upgrade")
             return
         
-        logger.info(f"Selected {len(sequences_for_physical_free)} sequences for preemption")
-        if len(sequences_for_physical_free) == 0:
-            logger.info("No sequences to preempt")
-            nr_physical_blocks = required_blocks * self.upgrade_config.pages_per_block
-            logger.info(f"Releasing {nr_physical_blocks} physical blocks")
+        # Handle free blocks if available
+        if free_blocks_to_use > 0:
+            nr_physical_blocks = free_blocks_to_use * self.upgrade_config.pages_per_block
+            logger.info(f"Releasing {nr_physical_blocks} physical blocks from free pool")
             self._run_workers(
                 "release_empty_kv",
                 nr_physical_blocks=int(nr_physical_blocks),
                 get_all_outputs=True
             )
-        else:
+        
+        # Handle preempted sequences if available
+        if sequences_for_physical_free or sequences_for_virtual_free:
             # For decode upgrade, sequences_for_virtual_free is empty (initialized as [] in the original)
             sequences_va = sequences_for_virtual_free if self.upgrade_config.serving_strategy == UpgradeStrategy.ServingStrategy.PREFILL_ONLY else []
             
-            # 2. release the kv memory for the selected sequences
+            logger.info(f"Releasing KV memory for {len(sequences_for_physical_free)} physical and {len(sequences_va)} virtual sequences")
             self._run_workers(
                 "release_sequences_kv",
                 sequences_PA=sequences_for_physical_free,
