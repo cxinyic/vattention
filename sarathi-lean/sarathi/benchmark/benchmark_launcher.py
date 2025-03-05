@@ -355,6 +355,9 @@ class BenchmarkRunnerLauncher:
         wandb.finish()
         return result
     
+    def run(self):
+        self._run_normal()
+    
     def run_with_upgrade(self):
         """Run benchmark with configurable upgrade strategy."""
         if not self._is_multi_replica:
