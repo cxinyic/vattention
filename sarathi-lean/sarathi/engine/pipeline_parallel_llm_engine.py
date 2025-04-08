@@ -74,6 +74,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
             metrics_config,
             upgrade_config,
         )
+        
         # Create the request queue.
         self.has_started_execution_loops = False
         self.scheduler_output_queue = Queue()
@@ -94,6 +95,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
         self.should_stop = False
 
         self.preemption_in_progress = False
+
 
     def _validate_parallel_config(self) -> None:
         assert self.parallel_config.pipeline_parallel_size > 1
@@ -136,8 +138,17 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
             if self.stop_scheduling:
                 continue
 
+            if self.preemption_in_progress:
+                logger.info("PP: Preemption in progress")
+                continue
+
             start_time = time.perf_counter()
             outputs = self._run_workers("get_free_blocks", get_all_outputs=True)
+            self.scheduler.block_manager.set_free_blocks(min(outputs))
+            # logger.info(f"Free blocks: {outputs}")
+            
+            scheduler_outputs = self.scheduler.schedule()
+
             if type(self.scheduler.block_manager) == vAttentionBlockSpaceManager:
                 if len(self.scheduler.block_manager.preemption_queue) > 0:
                     preemption_queue = self.scheduler.block_manager.preemption_queue
@@ -146,27 +157,31 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
                     preemption_queue = []
             else:
                 preemption_queue = []
-            self.scheduler.block_manager.set_free_blocks(min(outputs))
-            # logger.info(f"Free blocks: {outputs}, len: {len(preemption_queue)}")
+
             if len(preemption_queue) > 0:
+                logger.info(f"Preempting {len(preemption_queue)} sequences")
                 self.preemption_in_progress = True
-            scheduler_outputs = self.scheduler.schedule()
+            seq_metadata_list = []
 
             if scheduler_outputs.has_no_output():
+                # if len(preemption_queue) > 0:
+                #     self.scheduler_output_queue.put(None)
+                # else:
+                #     continue
                 continue
-
-            ignored_seqs, seq_metadata_list = self.seq_manager.on_schedule(
-                scheduler_outputs
-            )
-
-            self.scheduler_output_queue.put(
-                ScheduleStageOutputs(
-                    ignored_seqs,
-                    seq_metadata_list,
-                    scheduler_outputs,
-                    start_time,
+            else: 
+                ignored_seqs, seq_metadata_list = self.seq_manager.on_schedule(
+                    scheduler_outputs
                 )
-            )
+
+                self.scheduler_output_queue.put(
+                    ScheduleStageOutputs(
+                        ignored_seqs,
+                        seq_metadata_list,
+                        scheduler_outputs,
+                        start_time,
+                    )
+                )
 
             if not scheduler_outputs.is_empty():
                 self.inflight_batches_count += 1  # New batch entering pipeline
@@ -177,9 +192,19 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
                     preempted_seq=preemption_queue,
                     ignore_output=True,
                 )
+                end_time = time.perf_counter()
+                self.metrics_store.on_schedule(seq_metadata_list, start_time, end_time)
+            else:
+                if len(preemption_queue) > 0:
+                    self.microbatch_watch_event.set()
+                    self._run_workers(
+                        "enqueue",
+                        scheduler_outputs=scheduler_outputs,
+                        preempted_seq=preemption_queue,
+                        ignore_output=True,
+                    )
 
-            end_time = time.perf_counter()
-            self.metrics_store.on_schedule(seq_metadata_list, start_time, end_time)
+            
 
     @exit_on_error
     def _microbatch_watch_loop(self) -> None:
@@ -193,7 +218,9 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
                 (0, 0),  # rank zero
                 "get_output",
             )
-            # logger.info("Microbatch watch event triggered")
+            if self.stop_scheduling or self.preemption_in_progress:
+                continue
+
             self.schedule_event.set()
 
     @exit_on_error
@@ -210,24 +237,26 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
                 ),  # TP rank zero for last pipeline stage
                 "get_output",
             )
+            
+            if sampler_outputs["output"] and scheduler_stage_output is not None:
+            # this needs to be optimized
+                self._run_workers(
+                    "on_sampling_completed",
+                    scheduler_outputs=scheduler_stage_output.scheduler_outputs,
+                    sampler_outputs=sampler_outputs["output"],
+                    seq_metadata_list=scheduler_stage_output.seq_metadata_list,
+                )
+                all_request_outputs = self._on_step_completed(
+                    scheduler_stage_output.scheduler_outputs,
+                    scheduler_stage_output.ignored_seqs,
+                    scheduler_stage_output.seq_metadata_list,
+                    sampler_outputs["output"],
+                    scheduler_stage_output.start_time,
+                )
             if sampler_outputs["preemption_completed"]:
                 logger.info("Preemption completed")
                 self.preemption_in_progress = False
-
-            # this needs to be optimized
-            self._run_workers(
-                "on_sampling_completed",
-                scheduler_outputs=scheduler_stage_output.scheduler_outputs,
-                sampler_outputs=sampler_outputs["output"],
-                seq_metadata_list=scheduler_stage_output.seq_metadata_list,
-            )
-            all_request_outputs = self._on_step_completed(
-                scheduler_stage_output.scheduler_outputs,
-                scheduler_stage_output.ignored_seqs,
-                scheduler_stage_output.seq_metadata_list,
-                sampler_outputs["output"],
-                scheduler_stage_output.start_time,
-            )
+            
             self.schedule_event.set()
             self.inflight_batches_count -= 1  # Batch completed pipeline
             self.output_queue.put(all_request_outputs)

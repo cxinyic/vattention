@@ -22,12 +22,60 @@ from sarathi.benchmark.upgrade_utils.upgrade_state import UpgradeState
 from sarathi.metrics.metrics_store import MetricsStore
 from sarathi.utils import get_ip
 
+
 from sarathi.config import (
     MetricsConfig,
     UpgradeStrategy,
 )
 
 logger = logging.getLogger(__name__)
+
+class CoordinatedUpgradeState:
+    """Coordinates upgrade state between multiple models"""
+    
+    def __init__(self):
+        self._model_b_done = threading.Event()
+        self._model_a_done = threading.Event()
+        self._model_b_started = threading.Event()
+        self._model_a_started = threading.Event()
+        self._gpu_2_freed = threading.Event()
+    
+    def signal_model_b_upgrade_started(self):
+        """Signal that Model B has started the upgrade process"""
+        logger.info("Model B upgrade started")
+        self._model_b_started.set()
+    
+    def signal_model_b_upgrade_complete(self):
+        """Signal that Model B has completed the upgrade process"""
+        logger.info("Model B upgrade complete")
+        self._model_b_done.set()
+    
+    def signal_gpu_2_freed(self):
+        """Signal that GPU 2 has been freed by Model B"""
+        logger.info("GPU 2 freed by Model B")
+        self._gpu_2_freed.set()
+    
+    def signal_model_a_upgrade_started(self):
+        """Signal that Model A has started the upgrade process"""
+        logger.info("Model A upgrade started")
+        self._model_a_started.set()
+    
+    def signal_model_a_upgrade_complete(self):
+        """Signal that Model A has completed the upgrade process"""
+        logger.info("Model A upgrade complete")
+        self._model_a_done.set()
+        
+    def wait_for_model_b_upgrade_complete(self, timeout=None):
+        """Wait for Model B to complete the upgrade process"""
+        return self._model_b_done.wait(timeout)
+    
+    def wait_for_gpu_2_freed(self, timeout=None):
+        """Wait for GPU 2 to be freed by Model B"""
+        return self._gpu_2_freed.wait(timeout)
+    
+    def wait_for_model_a_upgrade_complete(self, timeout=None):
+        """Wait for Model A to complete the upgrade process"""
+        return self._model_a_done.wait(timeout)
 
 class BenchmarkRunnerLauncher:
     """
@@ -52,8 +100,9 @@ class BenchmarkRunnerLauncher:
         self._config = config
         self._new_config = new_config
         self._is_multi_replica = self._config.cluster_num_replicas > 1
-
-        ray.init(ignore_reinit_error=True)
+        if not self._config.multi_model:
+            ray.init(ignore_reinit_error=True)
+        self.coord_state = None
         required_blocks, pages_per_block = self.calculate_upgrade_blocks()
         self._config.upgrade_required_blocks = required_blocks
         self._config.pages_per_block = pages_per_block
@@ -310,6 +359,8 @@ class BenchmarkRunnerLauncher:
                 torch.cuda.synchronize()
                 torch.cuda.ipc_collect()
                 log_memory_usage("AFTER FORCE CLEANUP")
+                
+                self.coord_state.signal_gpu_2_freed()
 
                 if new_runner is not None:
                     new_runner._llm_engine.init_rest()
@@ -321,6 +372,40 @@ class BenchmarkRunnerLauncher:
                     logger.error("New runner initialization failed")
         wandb.finish()
     
+    def _create_ray_placement_group(self):
+        # Initialize Ray here once for all models
+        import ray
+        ray.init(ignore_reinit_error=True)
+        # Get cluster resources to determine total available GPUs
+        cluster_resources = ray.cluster_resources()
+        logger.info(f"Cluster resources: {cluster_resources}")
+        
+        # Get total number of GPUs in the cluster
+        total_gpus = int(cluster_resources.get("GPU", 0))
+        logger.info(f"Total GPUs in cluster: {total_gpus}")
+                
+        # Get the current node IP
+        current_ip = get_ip()
+        logger.info(f"Current node IP: {current_ip}")
+        
+        # Create a placement group with appropriate bundles for all GPUs in the cluster
+        # Each bundle requests GPU and CPU resources
+        bundles = [{"GPU": 1, "CPU": 1} for _ in range(total_gpus)]
+        
+        # Add node constraint to the first bundle to ensure it's created on the current node
+        bundles[0][f"node:{current_ip}"] = 0.001
+        
+        logger.info(f"Creating placement group with bundles: {bundles}")
+        self.pg = ray.util.placement_group(bundles, strategy="PACK")
+        logger.info(f"Placement group created: {self.pg}")
+        
+        # Wait for placement group to be ready
+        logger.info("Waiting for placement group to be ready...")
+        ray.get(self.pg.ready())
+        logger.info("Ray initialized once for all models")
+        pg_table = ray.util.placement_group_table(self.pg)
+        logger.info(f"Placement group ready: {pg_table}")
+
     def _run_without_overlap_upgrade(self):
         """Run single replica upgrade without overlap serving."""
         result = self._runner.run()
@@ -331,7 +416,9 @@ class BenchmarkRunnerLauncher:
             
             # Clean up Ray resources
             ray.shutdown()
-            ray.init(ignore_reinit_error=True)
+            self.pg = None
+            self._create_ray_placement_group()
+            self._new_config.placement_group = self.pg
             
             # Calculate new resource mapping based on new config
             new_resource_mapping = self._get_replica_resource_mapping_for_config(self._new_config)

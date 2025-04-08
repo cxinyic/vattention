@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Any
 
 import torch
 import torch.distributed
@@ -32,6 +32,8 @@ from sarathi.worker.cache_engine import get_cache_engine
 from sarathi.worker.cache_engine import get_cache_mem_alloc_backend
 import ray
 from datetime import datetime
+import vattention
+
 
 logger = init_logger(__name__)
 
@@ -78,8 +80,24 @@ class BaseWorker:
         self._verify_parallel_config()
         self.metrics_store = MetricsStore(metrics_config)
 
+        self._cpu_kvcache_manager = None
+        self.cpu_cache_connected = False
+
     def _verify_parallel_config(self) -> None:
         assert self.parallel_config.pipeline_parallel_size == 1
+    
+    def connect_cpu_cache(self, cpu_cache_info) -> None:
+        """Connect this worker to the global CPU cache"""
+        try:
+            vattention.connect_to_existing_cpu_memory(
+                cpu_cache_info["address"],
+                cpu_cache_info["metadata"]
+            )
+            self.cpu_cache_connected = True
+            logger.info(f"Worker successfully connected to CPU cache at address: {cpu_cache_info['address']}")
+        except Exception as e:
+            logger.error(f"Failed to connect to CPU cache: {e}")
+            self.cpu_cache_connected = False
 
     @torch.inference_mode()
     @synchronized
@@ -156,6 +174,8 @@ class BaseWorker:
             self.model_config,
             self.rank,
         )
+        logger.info(f"XY: Cache engine initialized on worker {self.rank}.")
+        
         # return self.cache_engine
     def get_free_blocks(self) -> int:
         return self.cache_engine.num_free_blocks()
@@ -188,6 +208,7 @@ class BaseWorker:
         self.seq_manager.block_manager.set_free_blocks(self.cache_engine.num_free_blocks()) 
         _, seq_metadata_list = self.seq_manager.on_schedule(scheduler_outputs)
         if preempted_seq:
+            logger.info(f"Worker {self.rank} - Preempting seq_ids {[seq.seq_id for seq in preempted_seq]}")
             self.preempt_requests(preempted_seq)
 
         self.cache_engine.step(seq_metadata_list)
@@ -273,8 +294,7 @@ class BaseWorker:
     @synchronized
     def release_empty_kv(self, nr_physical_blocks: int) -> None:
         self.cache_engine.free_physical_blocks(nr_physical_blocks)
-
-
+    
     
 def _init_distributed_environment(
     parallel_config: ParallelConfig,

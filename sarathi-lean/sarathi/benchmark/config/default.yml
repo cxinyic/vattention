@@ -10,6 +10,7 @@ enable_profiling: false
 gpu_memory_utilization: 0.85
 time_limit: 10281800 # seconds
 replica_resource_mapping: ""
+placement_group: null
 
 cluster:
   num_replicas: 1

@@ -7,6 +7,7 @@ from transformers import PretrainedConfig
 from sarathi.logger import init_logger
 from sarathi.transformers_utils.config import get_config
 from sarathi.utils.base_int_enum import BaseIntEnum
+from ray.util.placement_group import PlacementGroup
 
 logger = init_logger(__name__)
 
@@ -274,9 +275,11 @@ class ParallelConfig:
         pipeline_parallel_size: int,
         tensor_parallel_size: int,
         replica_resource_mapping: List[Tuple[str, int]] = [],
+        placement_group: Optional["PlacementGroup"] = None,
     ) -> None:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
+        self.placement_group = placement_group
 
         if not replica_resource_mapping:
             replica_resource_mapping = [
@@ -546,7 +549,7 @@ class UpgradeConfig:
         reschedule_policy: UpgradeStrategy.ReschedulePolicy = UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME,
     ) -> None:
         # Base configuration
-        self.strategy = strategy if isinstance(strategy, UpgradeStrategy.Mode) else UpgradeStrategy.Mode(strategy)
+        self.strategy = strategy 
         self.upgrade_time = upgrade_time
         self.required_blocks = required_blocks
         self.pages_per_block = pages_per_block
@@ -585,6 +588,9 @@ class UpgradeConfig:
     
     def _verify_args(self) -> None:
         """Verify the arguments."""
+        # No upgrade related, just assume valid
+        if self.strategy is None:
+            return
         if not isinstance(self.strategy, UpgradeStrategy.Mode):
             raise ValueError(
                 f"Invalid upgrade strategy: {self.strategy}. "

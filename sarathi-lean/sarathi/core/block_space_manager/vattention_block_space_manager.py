@@ -40,9 +40,9 @@ class vAttentionBlockSpaceManager():
         #     return True
         num_required_blocks = self.get_num_blocks(seq)
         num_free_gpu_blocks = self.free_blocks
-        # logger.info(f"num_free_gpu_blocks: {num_free_gpu_blocks} num_required_blocks: {num_required_blocks} self.promised_blocks: {self.promised_blocks} self.watermark_blocks: {self.watermark_blocks}")
+        # logger.info(f"XY: num_free_gpu_blocks: {num_free_gpu_blocks}, self.promised_blocks: {self.promised_blocks},  num_required_blocks: {num_required_blocks} self.watermark_blocks: {self.watermark_blocks}")
         # print("num_free_gpu_blocks: ", num_free_gpu_blocks, " num_required_blocks: ", num_required_blocks, " self.promised_blocks: ", self.promised_blocks, " self.watermark_blocks: ", self.watermark_blocks)
-        return num_free_gpu_blocks - self.promised_blocks - num_required_blocks >= self.watermark_blocks
+        return num_free_gpu_blocks - self.promised_blocks - num_required_blocks >= 3 * self.watermark_blocks
 
     def set_free_blocks(self, free_blocks: int) -> None:
         self.free_blocks = free_blocks

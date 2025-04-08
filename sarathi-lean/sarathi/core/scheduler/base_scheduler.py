@@ -1,6 +1,8 @@
 import time
 from abc import ABC, abstractmethod
 from typing import List, Tuple
+from threading import Lock
+
 
 from sarathi.config import BaseSchedulerConfig, CacheConfig
 from sarathi.core.block_space_manager.block_space_manager_registry import (
@@ -52,6 +54,9 @@ class BaseScheduler(ABC):
 
         self._during_upgrade = False
         self._during_draining = False
+        self._is_pipeline_parallel = False
+        self.sequence_lists_lock = Lock()
+        self.pp_blocking_queue = {}
 
     def set_block_manager(self, model_config):
         attn_cfg = model_config.attention_backend
@@ -136,6 +141,20 @@ class BaseScheduler(ABC):
         self.free_finished_seqs()
         self.remove_finished_seqs()
         self.num_running_batches -= 1
+    
+    def pp_on_step_completed(self,
+        scheduler_outputs: SchedulerOutputs) -> None:
+        if not self._is_pipeline_parallel:
+            return
+        self.sequence_lists_lock.acquire()
+        try:
+            for scheduled_seq_metadata in scheduler_outputs.scheduled_seq_metadata_list:
+                seq_id = scheduled_seq_metadata.seq_id
+                if seq_id in self.pp_blocking_queue:
+                    self.running.append(self.pp_blocking_queue[seq_id])
+                    del self.pp_blocking_queue[seq_id]
+        finally:
+            self.sequence_lists_lock.release()
 
     def _allocate(self, seq: Sequence) -> None:
         self.block_manager.allocate(seq)

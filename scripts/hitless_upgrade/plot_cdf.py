@@ -66,21 +66,21 @@ def plot_metric_cdf(latency_files: dict, metric: str, output_path: str, title: s
 
 def main():
     latency_files = {
-        # "No Upgrade": "logs/hitless_upgrade/bs_32/no_upgrade/latencies.csv",
-        # "Upgrade|No Overlap Serving": "logs/hitless_upgrade/bs_32/no_serve/latencies.csv",
+        # "No Upgrade": "logs/multi_model_upgrade_overlap/bs_32/gpu_0_1_2_3_to_0_1_2_3/no_upgrade/request_latencies.csv",
+        "Upgrade|No Overlap Serving": "logs/multi_model_upgrade_overlap/bs_32/gpu_0_1_2_3_to_0_1_2_3/no_serve/request_latencies.csv",
         # "Overlap Decode|kickout|select_by_to_finish|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/decode_only/kickout_immediately/by_finish_time/by_arrival_time/latencies.csv",
         # "Overlap Decode|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
         # "Overlap Decode|kickout|select_by_arrival|reschedule_by_prefill": "logs/hitless_upgrade/bs_32/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
         # "Overlap Decode|wait_then_kick|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/decode_only/wait_then_kickout/by_arrival_time/by_arrival_time/latencies.csv",
         # "Overlap Prefill|kickout|select_by_arrival|reschedule_by_arrival":
         # "logs/hitless_upgrade/bs_32/prefill_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        "No Upgrade": "logs/hitless_upgrade/bs_32/no_upgrade/latencies.csv",
-        "Upgrade|No Overlap Serving": "logs/hitless_upgrade/bs_32/gpu_2_to_4/no_serve/latencies.csv",
-        "Overlap Decode|kickout|select_by_to_finish|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_finish_time/by_arrival_time/latencies.csv",
-        "Overlap Decode|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        "Overlap Decode|kickout|select_by_arrival|reschedule_by_prefill": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
-        "Overlap Decode|wait_then_kick|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/wait_then_kickout/by_arrival_time/by_arrival_time/latencies.csv",
-        "Overlap Prefill|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/prefill_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "No Upgrade": "logs/hitless_upgrade/bs_32/no_upgrade/latencies.csv",
+        # "Upgrade|No Overlap Serving": "logs/hitless_upgrade/bs_32/gpu_2_to_4/no_serve/latencies.csv",
+        "Overlap Decode|kickout|select_by_to_finish|reschedule_by_arrival": "logs/multi_model_upgrade_overlap/bs_32/gpu_0_1_2_3_to_0_1_2_3/overlap/request_latencies.csv",
+        # "Overlap Decode|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "Overlap Decode|kickout|select_by_arrival|reschedule_by_prefill": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+        # "Overlap Decode|wait_then_kick|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/wait_then_kickout/by_arrival_time/by_arrival_time/latencies.csv",
+        # "Overlap Prefill|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/prefill_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
     }
     
     # Create output directory
@@ -90,21 +90,21 @@ def main():
     # Generate separate plots for each metric
     plot_metric_cdf(
         latency_files,
-        metric="e2e_latency_seconds",
+        metric="latency",
         output_path=f"{output_dir}/e2e_latency_cdf.png",
         title="End-to-End Latency CDF Comparison"
     )
     
     plot_metric_cdf(
         latency_files,
-        metric="ttft_seconds",
+        metric="ttft",
         output_path=f"{output_dir}/ttft_cdf.png",
         title="Time to First Token CDF Comparison"
     )
     
     plot_metric_cdf(
         latency_files,
-        metric="tpot_seconds",
+        metric="tpot",
         output_path=f"{output_dir}/tpot_cdf.png",
         title="Time per Output Token CDF Comparison"
     )

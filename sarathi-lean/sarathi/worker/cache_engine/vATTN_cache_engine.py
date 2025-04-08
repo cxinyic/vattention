@@ -29,7 +29,7 @@ class vATTNCacheEngine(BaseCacheEngine):
         parallel_config: ParallelConfig,
         mem_alloc_backend: str,
     ) -> None:
-        # vattention.set_verbose(True)
+        vattention.set_verbose(True)
         self.max_batch_size = cache_config.max_batch_size
         self.device = torch.empty(1).cuda().device if not in_wsl() else torch.device("cuda")
         self.device_idx = int(str(self.device).split(":")[-1])
@@ -46,6 +46,7 @@ class vATTNCacheEngine(BaseCacheEngine):
         return vattention.num_free_kvblocks()
 
     def allocate_gpu_cache(self) -> List[torch.Tensor]:
+        logger.info(f"XY: Allocating GPU cache, num_layers: {self.num_layers}, num_heads: {self.num_heads}, head_size: {self.head_size}, max_batch_size: {self.max_batch_size}, max_model_seq_len: {self.max_model_seq_len}, device_idx: {self.device_idx}, dtype: {self.dtype}, page_size: {self.page_size}, vattn_mega_cache: {self.vattn_mega_cache}")
         kv_cache = vattention.init_kvcache(
                                     self.num_layers,
                                     self.num_heads,
@@ -136,6 +137,12 @@ class vATTNCacheEngine(BaseCacheEngine):
             return self.seq_to_batch_idx[seq_id]
 
         return self.alloc_new_batch_idx(seq_id, seq_len)
+    
+    def get_batch_idx_for_seq(self, seq_id: int) -> int:
+        if seq_id in self.seq_to_batch_idx:
+            return self.seq_to_batch_idx[seq_id]
+        else:
+            return -1
 
     def alloc_new_batch_idx(self, seq_id: int, seq_len: int) -> int:
         new_batch_idx = vattention.alloc_new_batch_idx(seq_len)
@@ -165,7 +172,7 @@ class vATTNCacheEngine(BaseCacheEngine):
             self.curr_seq_lens[batch_idx] = 0
             return
         raise Exception(f"seq_id {seq_id} not found in req_table")
-
+    
     def free_physical_blocks(self, nr_physical_blocks: int) -> None:
         logger.info(f"Cache Engine: Releasing {nr_physical_blocks} physical blocks")
         vattention.remove_physical_blocks(nr_physical_blocks)

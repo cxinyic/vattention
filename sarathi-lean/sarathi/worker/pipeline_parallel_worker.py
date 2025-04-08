@@ -117,7 +117,7 @@ class PipelineParallelWorker(BaseWorker):
 
             if not self.is_tensor_parallel_rank_zero:
                 continue
-            if not is_preempted_seq_empty and self.is_last_pipeline_stage:
+            if (not is_preempted_seq_empty) and self.is_last_pipeline_stage:
                 output_package = {
                     "output": output,
                     "preemption_completed": True

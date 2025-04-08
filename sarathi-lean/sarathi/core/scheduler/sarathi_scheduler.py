@@ -141,6 +141,7 @@ class SarathiScheduler(BaseScheduler):
         # In this case, the policy is responsible for deciding which sequence
         # groups to preempt.
         self.running = self.policy.sort_by_priority(now, self.running)
+        
 
         # in first pass process all the requests with prefill completed
         # this allows us to accurately account for the number of decode tokens
@@ -168,11 +169,13 @@ class SarathiScheduler(BaseScheduler):
                     # Preempt the lowest-priority sequence groups.
                     victim_seq = self.running.pop(-1)
                     self._preempt(victim_seq)
+                    logger.info(f"Preempting seq {victim_seq.seq_id} + {self._is_pipeline_parallel}")
                     preempted_seq_ids.append(victim_seq.seq_id)
                 else:
                     # No other sequence groups can be preempted.
                     # Preempt the current sequence group.
                     self._preempt(seq)
+                    logger.info(f"Preempting current seq {seq.seq_id} + {self._is_pipeline_parallel}")
                     preempted_seq_ids.append(seq.seq_id)
                     break
             else:
@@ -199,6 +202,7 @@ class SarathiScheduler(BaseScheduler):
             next_num_prefill_tokens = self._get_seq_next_num_prefill_tokens(
                 seq, batch_contains_prefill, num_batched_tokens
             )
+            logger.info(f"running prefills with next_num_prefill_tokens: {next_num_prefill_tokens}")
 
             # as long as the request could fit in the batch previously
             # it should be able to fit in the batch now
@@ -274,7 +278,9 @@ class SarathiScheduler(BaseScheduler):
                 break
 
             seq = self.waiting.pop(0)
+            logger.info(f"XY: Allocating seq from waiting: {seq.seq_id}, before allocate promised blocks: {self.block_manager.promised_blocks}")
             self._allocate(seq)
+            logger.info(f"XY: Allocating seq from waiting: {seq.seq_id}, after allocate promised blocks: {self.block_manager.promised_blocks}")
             batch_contains_prefill = True
             num_batched_tokens += next_num_prefill_tokens
             scheduled_seq_metadata_list.append(
@@ -287,9 +293,22 @@ class SarathiScheduler(BaseScheduler):
         # make sure that prefills are at the start of the batch, so that we don't violate assumptions
         # made in the original vllm codebase
         self.running = running
-        # logger.info(f"len of self.running: {len(self.running)}, waiting: {len(self.waiting)}")
+        if len(preempted_seq_ids) > 0:
+            for seq in self.running:
+                logger.info(f"running sequence: {seq.seq_id}")
+        # if self._during_upgrade:
+        #     logger.info(f"len of self.running: {len(self.running)}, waiting: {len(self.waiting)}")
         # for seq in self.running:
         #     logger.info(f"running sequence: {seq.seq_id}")
+        if self._is_pipeline_parallel:
+            self.sequence_lists_lock.acquire()
+            try:
+                for seq in self.running:
+                    self.pp_blocking_queue[seq.seq_id] = seq
+                    self.running.remove(seq)
+            finally:
+                self.sequence_lists_lock.release()
+            
         return SchedulerOutputs(
             id=self._iteration_id,
             ignored_seq_ids=ignored_seq_ids,
@@ -326,7 +345,8 @@ class SarathiScheduler(BaseScheduler):
         
         # Get current free blocks and watermark
         current_free_blocks = self.block_manager.get_num_free_gpu_blocks()
-        watermark_blocks = self.block_manager.get_watermark_blocks()
+        # TODO(XY): think about this threshold
+        watermark_blocks = 5
         available_free_blocks = max(0, current_free_blocks - watermark_blocks)
         
         logger.info(f"Free blocks: {current_free_blocks}, Watermark: {watermark_blocks}, Available: {available_free_blocks}")

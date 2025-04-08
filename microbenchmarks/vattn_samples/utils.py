@@ -5,15 +5,15 @@ import vattention
 MB = (1024 * 1024)
 GB = (1024 * MB)
 # reserve memory for the kv cache
-GPU_MEM_RESERVE = (70*GB)
+GPU_MEM_RESERVE = (2*GB)
 PAGE_SIZE = (2 * MB)
 USE_UVM = False
 
 NUM_LAYERS=32
-NUM_KV_HEADS=32
+NUM_KV_HEADS=8
 HEAD_DIM=128
-MAX_BATCH_SIZE=100
-MAX_CONTEXT_LEN=32768
+MAX_BATCH_SIZE=2
+MAX_CONTEXT_LEN=16384
 
 INIT_SEQ_LEN = 1024
 INCR_SEQ_LEN = 250
@@ -32,12 +32,14 @@ def do_matmul():
     return round(start.elapsed_time(end), 3)
 
 
+
 def init_kvcache():
-    kv_cache = vattention.init_kvcache(NUM_LAYERS, NUM_KV_HEADS, HEAD_DIM, MAX_BATCH_SIZE, MAX_CONTEXT_LEN, 0, torch.float16, USE_UVM)
+    kv_cache = vattention.init_kvcache(NUM_LAYERS, NUM_KV_HEADS, HEAD_DIM, MAX_BATCH_SIZE, MAX_CONTEXT_LEN, 0, torch.float16, 2*1024*1024, False)
     print(f"number of virtual tensors: {len(kv_cache)}")
     vattention.reserve_physical_pages(GPU_MEM_RESERVE)
     vattention.set_verbose(False)
     #vattention.show_kvcache_config()
+    print(f"kv cache shape: {kv_cache[0][1].shape}")
     return kv_cache
 
 def access_kv_cache(kv_cache, seqlens):

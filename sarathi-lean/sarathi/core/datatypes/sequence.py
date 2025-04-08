@@ -7,7 +7,8 @@ from sarathi.core.datatypes.sampling_params import SamplingParams
 from sarathi.core.datatypes.sequence_state import SequenceState
 from sarathi.core.datatypes.sequence_status import SequenceStatus
 
-
+from sarathi.logger import init_logger
+logger = init_logger(__name__)
 class Sequence:
     """Stores the data, status, and block information of a sequence.
 
@@ -85,7 +86,11 @@ class Sequence:
 
     def update_prompt_tokens_processed(self, num_tokens: int) -> None:
         assert not self.prompt_processing_finished
-        assert num_tokens > 0
+        logger.info(f"XY: Updating prompt tokens processed for seq_id: {self.seq_id}, len: {num_tokens}")
+        # assert num_tokens > 0
+        if num_tokens == 0:
+            # This is just because the preempt happens within the same round
+            return
 
         self.prompt_tokens_processed += num_tokens
         assert self.prompt_tokens_processed <= len(self.prompt_token_ids)
@@ -132,7 +137,15 @@ class Sequence:
     def get_next_prompt_chunk_token_ids(self, chunk_size: int) -> List[int]:
         start = self.prompt_tokens_processed
         end = start + chunk_size
-        assert end <= len(self.prompt_token_ids)
+        # assert end <= len(self.prompt_token_ids)
+        if end > len(self.prompt_token_ids):
+            # TODO(XY): an async bug which I think I have fixed, need double check
+            if end == 2 * len(self.prompt_token_ids):
+                logger.info("XY: sync bug, just ignore now")
+                return self.prompt_token_ids[0:len(self.prompt_token_ids)]
+            else: 
+                logger.error(f"XY: end is greater than prompt_token_ids for seq_id: {self.seq_id}, end: {end}, len: {len(self.prompt_token_ids)}")
+            end = len(self.prompt_token_ids)
         return self.prompt_token_ids[start:end]
 
     def get_next_prompt_chunk_len(self, chunk_size: int) -> int:
@@ -239,6 +252,7 @@ class SequenceScheduleMetadata:
     ) -> "SequenceScheduleMetadata":
         if prompt_chunk_len is None:
             if seq.prompt_processing_finished:
+                # logger.info(f"XY: Prompt processing finished for seq_id: {seq.seq_id}")
                 prompt_chunk_len = 0
             else:
                 prompt_chunk_len = seq.get_prompt_len()

@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 from sarathi.model_executor.attention import AttentionBackend
 import yaml
 import torch
+from ray.util.placement_group import PlacementGroup
 
 from sarathi.config import (
     BaseSchedulerConfig,
@@ -42,6 +43,7 @@ class EngineArgs:
     seed: int = 0
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
+    placement_group: Optional["PlacementGroup"] = None,
     block_size: int = 16
     gpu_memory_utilization: float = 0.85
     revision: Optional[str] = None
@@ -191,6 +193,7 @@ class EngineArgs:
             pipeline_parallel_size=self.pipeline_parallel_size,
             tensor_parallel_size=self.tensor_parallel_size,
             replica_resource_mapping=self.replica_resource_mapping,
+            placement_group=self.placement_group,
         )
         
         scheduler_config = self._get_scheduler_config(

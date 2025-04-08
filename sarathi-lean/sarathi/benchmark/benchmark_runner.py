@@ -88,6 +88,9 @@ class BenchmarkRunner:
         output_dir = base_output_dir
         logger.info(f"Output directory: {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
+        if not self._is_new_runner:
+            self._latency_tracker = LatencyTracker(output_dir)
+
 
         # Initialize requests based on runner type
         self._requests = None
@@ -169,17 +172,17 @@ class BenchmarkRunner:
             selection_policy=self._config.upgrade_selection_policy,
             serving_strategy=self._config.upgrade_serving_strategy,
             reschedule_policy=self._config.upgrade_reschedule_policy,
+            placement_group=self._config.placement_group,
         )
         self._llm_engine.upgrade_config.drain_strategy 
 
         if not self._is_new_runner or self._config.upgrade_serving_strategy == UpgradeStrategy.ServingStrategy.NO_SERVE:
             self._llm_engine.init_rest()
         
-        if not self._is_new_runner:
-            self._latency_tracker = LatencyTracker(output_dir)
+        
+        self.start_time = time.monotonic()
         self.is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
         
-
     def set_upgrade_state(self, upgrade_state: UpgradeState) -> None:
         """Set the upgrade state object for coordination during upgrade."""
         self.upgrade_state = upgrade_state
@@ -245,10 +248,17 @@ class BenchmarkRunner:
             index += 1
 
     def _update_request_state(self, output: RequestOutput) -> None:
-        """Update internal state tracking for a request."""
+        """Update internal state tracking for a request with explicit token tracking."""
         current_time = time.monotonic()
         seq_id = str(output.seq_id)  # Convert to string for consistent key type
-
+        
+        
+        current_token_count = len(output.token_ids) if output.token_ids is not None else 0
+        # TODO(XY): think about this 
+        # current_token_count += len(output.prompt_token_ids) 
+        
+        # Log token count for debugging
+        # logger.info(f"Request {seq_id} update - token count: {current_token_count}")
         
         if seq_id not in self._request_states:
             # If somehow we don't have state for this request, initialize it
@@ -261,13 +271,18 @@ class BenchmarkRunner:
                 'finished': False,
                 'original_request': self._requests[int(seq_id)],
                 'start_time': time.monotonic(),
-                'token_generation_start_time': time.monotonic(),  # Initialize token time tracking
-                'prev_token_count': 0,  # Track previous token count explicitly
+                'token_generation_start_time': time.monotonic(),
+                'prev_token_count': 0,
             }
+            # Initially register request with latency tracker
+            self._latency_tracker.request_started(seq_id)
+            # logger.info(f"New request state initialized for {seq_id}")
         
         # Get previous state
         prev_state = self._request_states[seq_id]
-        prev_token_count = len(prev_state.get('current_token_ids', []))
+        prev_token_count = prev_state.get('prev_token_count', 0)
+        
+        
         
         # Update the request state with new information
         updated_state = {
@@ -279,8 +294,8 @@ class BenchmarkRunner:
             'finished': output.finished,
             'finish_reason': output.finish_reason,
             'original_request': self._requests[int(seq_id)],
-            'start_time': prev_state['start_time'],  # Preserve start time
-            'prev_token_count': prev_token_count,  # Store previous token count
+            'start_time': prev_state['start_time'],
+            'prev_token_count': current_token_count,  # Update token count for next comparison
         }
         
         # Copy over existing metrics if present
@@ -292,9 +307,9 @@ class BenchmarkRunner:
             updated_state['tpot_samples'] = prev_state['tpot_samples']
         if 'token_generation_start_time' in prev_state:
             updated_state['token_generation_start_time'] = prev_state['token_generation_start_time']
-                
+        
         # Check if this update produced the first token
-        is_first_token = prev_token_count == 0 and 'ttft' not in prev_state
+        is_first_token = (prev_token_count == 0 and current_token_count > 0 and 'ttft' not in prev_state)
         
         # Record TTFT if this is the first token
         if is_first_token:
@@ -304,20 +319,34 @@ class BenchmarkRunner:
             # Log TTFT in the latency tracker
             self._latency_tracker.log_ttft(seq_id, ttft)
         
-        # Calculate TPOT if new tokens were generated
-        else:
-            # Time since last token generation or since start if this is the first update
-            generation_time = current_time - updated_state['token_generation_start_time']
-
-            # Update running average for TPOT
-            if 'tpot_sum' in updated_state:
-                updated_state['tpot_sum'] += generation_time
-                updated_state['tpot_samples'] += 1
-            else:
-                updated_state['tpot_sum'] = generation_time
-                updated_state['tpot_samples'] = 1
         
-        # Update token generation start time for next calculation
+          # Include prompt tokens
+        tokens_generated = current_token_count - prev_token_count
+        updated_state['prev_token_count'] = current_token_count
+        # if tokens_generated > 0:
+        #     # logger.info(f"Request {seq_id} generated {tokens_generated} new tokens: {prev_token_count} -> {current_token_count}")
+        #     # Force log tokens to latency tracker
+        #     self._latency_tracker.log_tokens(seq_id, current_token_count, prev_token_count)
+        
+        # Calculate TPOT if new tokens were generated
+        if tokens_generated > 0:
+            # Time since last token generation
+            generation_time = current_time - updated_state['token_generation_start_time']
+            
+            # Update running average for TPOT - only if time is reasonable
+            if generation_time > 0:
+                if 'tpot_sum' in updated_state:
+                    updated_state['tpot_sum'] += generation_time
+                    updated_state['tpot_samples'] += 1
+                else:
+                    updated_state['tpot_sum'] = generation_time
+                    updated_state['tpot_samples'] = 1
+                
+                # Calculate and log instantaneous TPOT for this batch of tokens
+                instantaneous_tpot = generation_time / tokens_generated
+                # logger.info(f"Request {seq_id} instantaneous TPOT: {instantaneous_tpot:.4f}s/token for {tokens_generated} tokens")
+        
+        # Always update token generation start time for next calculation
         updated_state['token_generation_start_time'] = current_time
         
         # Update request state with our changes
@@ -329,41 +358,56 @@ class BenchmarkRunner:
             latency = current_time - updated_state['start_time']
             updated_state['latency'] = latency
             
-            # Calculate final TPOT if we have samples
+            # Calculate final TPOT if we have samples, otherwise force a calculation
             if 'tpot_samples' in updated_state and updated_state['tpot_samples'] > 0:
                 final_tpot = updated_state['tpot_sum'] / updated_state['tpot_samples']
                 updated_state['tpot'] = final_tpot
-                # Log TPOT in the latency tracker
                 self._latency_tracker.log_tpot(seq_id, final_tpot)
                 logger.info(f"Request {seq_id} final TPOT: {final_tpot:.4f} seconds per token")
+            elif current_token_count > 0:
+                # Force TPOT calculation if we have tokens but no samples
+                final_tpot = latency / current_token_count
+                updated_state['tpot'] = final_tpot
+                self._latency_tracker.log_tpot(seq_id, final_tpot)
+                logger.info(f"Request {seq_id} forced TPOT calculation: {final_tpot:.4f} seconds per token")
             else:
-                # If no tokens were generated or tracking failed, set TPOT to 0
+                # If no tokens at all, set TPOT to 0
                 updated_state['tpot'] = 0.0
                 self._latency_tracker.log_tpot(seq_id, 0.0)
-                logger.info(f"Request {seq_id} couldn't calculate TPOT (no tokens or no samples)")
+                logger.info(f"Request {seq_id} has no tokens, TPOT set to 0")
             
-            # Handle case where TTFT wasn't recorded (very fast completion or other issue)
+            # Force TTFT if not recorded
             if 'ttft' not in updated_state:
-                # Use a reasonable default - could be the full latency or a fraction of it
-                # Here we use the full latency with a note
-                ttft = latency
-                updated_state['ttft'] = ttft
-                self._latency_tracker.log_ttft(seq_id, ttft)
-                logger.info(f"Request {seq_id} completed without recording TTFT, using completion time: {ttft:.4f}s")
+                if current_token_count > 0:
+                    # Use a fraction of latency as an estimate
+                    ttft = latency * 0.2  # Assume 20% of time was TTFT
+                    updated_state['ttft'] = ttft
+                    self._latency_tracker.log_ttft(seq_id, ttft)
+                    logger.info(f"Request {seq_id} forced TTFT estimate: {ttft:.4f}s")
+                else:
+                    # No tokens, use full latency
+                    ttft = latency
+                    updated_state['ttft'] = ttft
+                    self._latency_tracker.log_ttft(seq_id, ttft)
+                    logger.info(f"Request {seq_id} no tokens, TTFT: {ttft:.4f}s")
             
             # Update final state
             self._request_states[seq_id] = updated_state
             self._finished_requests[seq_id] = updated_state
             if seq_id in self._pending_requests:
                 del self._pending_requests[seq_id]
+
             
-            # Log the end-to-end latency
-            self._latency_tracker.log_latency(seq_id, latency)
+            # Log the final latency with total token count
+            self._latency_tracker.log_latency(seq_id, latency, current_token_count)
             
             # Log completion with all metrics
+            token_throughput = current_token_count / latency if latency > 0 and current_token_count > 0 else 0
             logger.info(f"Request {seq_id} completed with latency: {latency:.4f} seconds, "
-                        f"TTFT: {updated_state['ttft']:.4f} seconds, "
+                        f"TTFT: {updated_state.get('ttft', 0.0):.4f} seconds, "
                         f"TPOT: {updated_state.get('tpot', 0.0):.4f} seconds per token, "
+                        f"Tokens: {current_token_count}, "
+                        f"Throughput: {token_throughput:.2f} tokens/second, "
                         f"reason: {output.finish_reason}")
         else:
             # For ongoing requests, update the pending queue
@@ -386,12 +430,20 @@ class BenchmarkRunner:
         while not self.upgrade_state.is_weights_loaded():
             step_outputs = self._llm_engine.step()
             num_steps += 1
-
+            nr_generate_tokens = 0
             for output in step_outputs:
+                # prompt phase, we count the prompt tokens
+                # if len(output.token_ids) == 1:
+                #     nr_generate_tokens += len(output.prompt_token_ids) 
+                # else:
+                #     nr_generate_tokens += 1
+
                 self._update_request_state(output)
                 if output.finished:
                     num_processed_requests += 1
                     pbar.update(1)
+                nr_generate_tokens += 1
+            self._latency_tracker.log_tokens(nr_generate_tokens)
         logger.info("Stop serving during upgrade")
         if is_pipeline_engine:
             self._llm_engine.signal_stop_scheduling()
@@ -414,7 +466,7 @@ class BenchmarkRunner:
             total=len(self._requests)-num_processed_requests,
             desc=f"Replica {self._replica_id} processed requests",
         )
-        start_time = time.monotonic()
+        # start_time = time.monotonic()
 
         # Only needed for pipeline engine
         is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
@@ -427,9 +479,10 @@ class BenchmarkRunner:
         drain_mode_start_time = None
 
         while num_processed_requests < len(self._requests):
-            elapsed_time = time.monotonic() - start_time
+            elapsed_time = time.monotonic() - self.start_time
             
             if not self._is_new_runner and self._config.upgrade_time and elapsed_time > self._config.upgrade_time:
+
                 # wait mode will not stop immediately, but send a signal to do draining
                 if is_wait_mode:
                     # First time entering drain mode
@@ -475,19 +528,28 @@ class BenchmarkRunner:
 
             step_outputs = self._llm_engine.step()
             num_steps += 1
+            nr_generate_tokens = 0
 
             for output in step_outputs:
+                # prompt phase, we count the prompt tokens
+                # if len(output.token_ids) == 1:
+                #     nr_generate_tokens += len(output.prompt_token_ids) 
+                # else:
+                #     nr_generate_tokens += 1
+
                 self._update_request_state(output)
                 if output.finished:
                     num_processed_requests += 1
-                    pbar.update(1)        
+                    pbar.update(1)  
+                nr_generate_tokens += 1
+            self._latency_tracker.log_tokens(nr_generate_tokens)   
 
         end_time = time.monotonic()
         pbar.close()
         
         logger.info(
             f"Replica {self._replica_id} exiting after processing {num_processed_requests} requests "
-            f"({num_steps} iterations), Total time taken: {end_time - start_time:.2f} seconds"
+            f"({num_steps} iterations), Total time taken: {end_time - self.start_time:.2f} seconds"
         )
         if is_pipeline_engine:
             logger.info("Stopping pipeline engine execution loops")
@@ -498,9 +560,12 @@ class BenchmarkRunner:
         
         self._latency_tracker.export_latencies()
         stats = self._latency_tracker.get_statistics()
-        logger.info("Latency Statistics:")
+        logger.info("Performance Statistics:")
         for key, value in stats.items():
-            logger.info(f"{key}: {value:.2f}s")
+            if 'throughput' in key or 'tokens_per_second' in key:
+                logger.info(f"{key}: {value:.2f} tokens/s")
+            else:
+                logger.info(f"{key}: {value:.2f}s")
 
         return "COMPLETED"
 

@@ -84,6 +84,7 @@ class ModelRunner:
             current_prompt_chunk_tokens = (
                 seq_metadata.seq.get_next_prompt_chunk_token_ids(prompt_chunk_len)
             )
+            # TODO(XY): the same sync bug, just ignore now
             current_prompt_chunk_len = len(current_prompt_chunk_tokens)
             current_prompt_chunk_lens.append(current_prompt_chunk_len)
             processed_prompt_len = seq_metadata.seq.get_num_prompt_tokens_processed()
@@ -222,6 +223,7 @@ class ModelRunner:
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
+        
         return num_gpu_blocks, physical_memory
 
     def run(

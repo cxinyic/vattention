@@ -23,12 +23,15 @@ from sarathi.metrics.constants import CpuOperationMetrics
 from sarathi.metrics.cpu_timer import CpuTimer
 from sarathi.metrics.metrics_store import MetricsStore
 from sarathi.transformers_utils.tokenizer import get_tokenizer
-from sarathi.utils import Counter, get_ip, get_random_port, unset_cuda_visible_devices
+from sarathi.utils import Counter, get_ip, get_random_port, unset_cuda_visible_devices, set_cuda_visible_devices
 from sarathi.model_executor.attention import AttentionBackend
 from sarathi.core.block_space_manager.vattention_block_space_manager import (
     vAttentionBlockSpaceManager
 )
 from sarathi.config import UpgradeConfig, UpgradeStrategy
+import vattention
+
+
 import torch
 
 logger = init_logger(__name__)
@@ -164,6 +167,9 @@ class BaseLLMEngine:
         self.scheduler = SchedulerRegistry.get(
             self.scheduler_config.type, self.scheduler_config, self.cache_config
         )
+        if self.parallel_config.pipeline_parallel_size > 1:
+            logger.info("Setting pipeline parallelism to True")
+            self.scheduler._is_pipeline_parallel = True
         self.scheduler.set_block_manager(self.model_config)
         
 
@@ -171,6 +177,8 @@ class BaseLLMEngine:
         self._process_model_outputs_timer = CpuTimer(
             CpuOperationMetrics.PROCESS_MODEL_OUTPUTS
         )
+        
+        
     def _validate_parallel_config(self) -> None:
         assert self.parallel_config.pipeline_parallel_size == 1
 
@@ -184,55 +192,93 @@ class BaseLLMEngine:
         return BaseWorker
 
     def _init_workers_ray(self, **ray_remote_kwargs):
+        """Initialize Ray workers with specific GPU assignments using placement groups."""
         replica_resource_mapping = self.parallel_config.replica_resource_mapping
-        logger.info(
-            f"Starting workers with resource mapping: {replica_resource_mapping}"
-        )
+        logger.info(f"Starting workers with resource mapping: {replica_resource_mapping}")
 
         self.workers: List[RayWorker] = []
-
-        unset_cuda_visible_devices()
-
-        # Get GPU allocation based on engine type
+        
+        
+        # Store the placement group in the parallel_config for future reference
+        pg = self.parallel_config.placement_group 
+        logger.info(f"pg is {pg}")
+        ray.get(pg.ready())
+        logger.info(f"Placement group ready")
         gpu_allocation = ENGINE_GPU_ALLOCATION[self.upgrade_engine_type]
-        logger.info(f"Initializing engine with GPU allocation: {gpu_allocation}")
-
-
+        
+        
+        # # Log placement group details
+        # pg_table = ray.util.placement_group_table(pg)
+        # logger.info(f"Placement group ready: {pg_table}")
+        
         driver_ip = None
-        for rank, (node_ip, _) in enumerate(replica_resource_mapping):
-            if self.upgrade_engine_type == "new":
-                if self.upgrade_config.is_gpu_expansion:
-                    if rank >= self.upgrade_config.original_gpu_count:
-                        logger.info(f"Rank {rank} is a new GPU, setting GPU allocation to 0.51")
-                        gpu_allocation = 0.51
-            worker_class = ray.remote(
-                # num_cpus=1,
-                num_gpus=gpu_allocation, # we don't use ray for managing GPUs
-                **ray_remote_kwargs,
-            )(RayWorker)
-
+        for rank, (node_ip, gpu_id) in enumerate(replica_resource_mapping):
+            # # Check if this is a new GPU in expansion scenario
+            if self.upgrade_engine_type == "new" and self.upgrade_config.is_gpu_expansion:
+                # TODO(XY): manually set for every case, need to automate(now for 23->123)
+                # if gpu_id == 1:
+                # if gpu_id > 1: 
+                #     logger.info(f"Rank {rank} is a new GPU, setting GPU allocation to 0.51")
+                #     gpu_allocation = 0.51
+                # else:
+                #     logger.info(f"Rank {rank} is an old GPU, setting GPU allocation to 0.49")
+                #     gpu_allocation = 0.49
+                gpu_allocation = 0.49
+            
+            # # Create worker class with appropriate resources
+            # worker_class = ray.remote(
+            #     num_cpus=1,
+            #     num_gpus=1,
+            #     **ray_remote_kwargs,
+            # )(RayWorker)
+            
+            # # Add scheduling strategy to ensure worker is assigned to the right bundle
+            # # The bundle index should match the GPU ID to ensure specific GPU assignment
+            # if gpu_id >= total_gpus:
+            #     logger.warning(f"Requested GPU ID {gpu_id} exceeds total available GPUs {total_gpus}. Using bundle 0.")
+            #     bundle_index = 0
+            # else:
+            #     bundle_index = gpu_id
+                
+            # scheduling_strategy = ray.util.scheduling_strategies.PlacementGroupSchedulingStrategy(
+            #     placement_group=pg,
+            #     placement_group_capture_child_tasks=True,
+            #     placement_group_bundle_index=bundle_index  # Use GPU ID as bundle index
+            # )
+            
+            # # Add node resource constraint if specified
+            resource_constraints = {}
             if node_ip:
-                worker_class = worker_class.options(
-                    max_concurrency=_MAX_WORKER_CONCURRENCY,
-                    resources={
-                        node_ip: 0.01,
-                    },
-                )
-            else:
-                worker_class = worker_class.options(
-                    max_concurrency=_MAX_WORKER_CONCURRENCY,
-                )
+                resource_constraints[node_ip] = 0.01
+                
+                # Set driver_ip if this is the first worker
+                if rank == 0:
+                    # remove node: prefix if present
+                    driver_ip = node_ip.split(":")[1] if ":" in node_ip else node_ip
+            
+            # # Create the worker with the scheduling strategy
+            # worker = worker_class.options(
+            #     max_concurrency=_MAX_WORKER_CONCURRENCY,
+            #     resources=resource_constraints,
+            #     scheduling_strategy=scheduling_strategy
+            # ).remote(self.model_config.trust_remote_code)
+            scheduling_strategy = ray.util.scheduling_strategies.PlacementGroupSchedulingStrategy(
+                placement_group=pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=gpu_id,
+            )
+            logger.info(f"Creating worker for rank {rank} assigned to GPU {gpu_id} with gpu_allocation {gpu_allocation}")
 
-            if rank == 0:
-                if node_ip:
-                    # remove node: prefix
-                    driver_ip = node_ip.split(":")[1]
-                else:
-                    driver_ip = get_ip()
-
-            worker = worker_class.remote(self.model_config.trust_remote_code)
-
+            worker = ray.remote(
+                num_cpus=0,
+                num_gpus=gpu_allocation,
+                scheduling_strategy=scheduling_strategy,
+                max_concurrency=_MAX_WORKER_CONCURRENCY,
+                **ray_remote_kwargs,
+            )(RayWorker).remote(self.model_config.trust_remote_code)
+            
             self.workers.append(worker)
+            logger.info(f"Created worker for rank {rank} assigned to GPU {gpu_id}")
 
         # TODO(amey): Use a more robust method to initialize the workers.
         # In case port is already in use, this will fail.
@@ -250,9 +296,10 @@ class BaseLLMEngine:
         metrics_config = self.metrics_store.get_config_for_worker()
         
         worker_impl = self._get_worker_impl()
-
+        logger.info("XY: before call promise") 
         for rank, worker in enumerate(self.workers):
             local_rank = replica_resource_mapping[rank][1]
+            logger.info("XY: step 1")
             promise = worker.init_worker.remote(
                 lambda rank=rank, local_rank=local_rank: worker_impl(
                     model_config,
@@ -265,12 +312,15 @@ class BaseLLMEngine:
                     distributed_init_method,
                 )
             )
+            logger.info("XY: step 2")
             ray.get(promise)
-
+            logger.info("XY: step 3")
+        logger.info("XY: before call init_model")  
         self._run_workers(
             "init_model",
             get_all_outputs=True,
         )
+        
 
     def _verify_args(self) -> None:
         self._validate_parallel_config()
@@ -279,21 +329,31 @@ class BaseLLMEngine:
     def _init_cache(self) -> None:
         """Profiles the memory usage and initializes the KV cache."""
         # Get the maximum number of blocks that can be allocated on GPU.
-        output_all = self._run_workers(
-            "profile_num_available_blocks",
-            get_all_outputs=True,
-            block_size=self.cache_config.block_size,
-            gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
-        )
         
-        # exit(0)
-        num_gpu_blocks_across_workers, physical_memory_all = map(list, zip(*output_all))
+        logger.info("XY: before profile_num_available_blocks")
+        # if self.upgrade_engine_type == "new":
+        if self.upgrade_engine_type == "disable":
+            num_gpu_blocks = 93
+            physical_memory = 9399043993
+        else:
+            output_all = self._run_workers(
+                "profile_num_available_blocks",
+                get_all_outputs=True,
+                block_size=self.cache_config.block_size,
+                gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
+            )
+            
+            
+            # exit(0)
+            num_gpu_blocks_across_workers, physical_memory_all = map(list, zip(*output_all))
 
-        # Since we use a shared centralized controller, we take the minimum
-        # number of blocks across all workers to make sure all the memory
-        # operators can be applied to all workers.
-        num_gpu_blocks = min(num_gpu_blocks_across_workers)
-        physical_memory = min(physical_memory_all)
+            # Since we use a shared centralized controller, we take the minimum
+            # number of blocks across all workers to make sure all the memory
+            # operators can be applied to all workers.
+            num_gpu_blocks = min(num_gpu_blocks_across_workers)
+            physical_memory = min(physical_memory_all)
+        logger.info("XY: after profile_num_available_blocks")
+        logger.info(f"XY: num_gpu_blocks: {num_gpu_blocks}, physical_memory: {physical_memory}")
 
         # FIXME(woosuk): Change to debug log.
         logger.info(f"# GPU blocks: {num_gpu_blocks}")
@@ -316,6 +376,7 @@ class BaseLLMEngine:
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.memory_for_gpu = physical_memory
         # Initialize the cache.
+        logger.info("XY: Initializing the cache.")
         self._run_workers(
             "init_cache_engine", cache_config=self.cache_config, get_all_outputs=True
         )
@@ -342,6 +403,7 @@ class BaseLLMEngine:
                 scheduler_outputs,
                 sampler_outputs,
             )
+            self.scheduler.pp_on_step_completed(scheduler_outputs)
             self.scheduler.on_step_completed()
 
         end_time = time.perf_counter()

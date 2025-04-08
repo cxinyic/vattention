@@ -13,6 +13,8 @@ from sarathi.core.datatypes.sequence import (
 from sarathi.core.datatypes.sequence_status import SequenceStatus
 from sarathi.utils.threading_utils import synchronized
 
+from sarathi.logger import init_logger
+logger = init_logger(__name__)
 
 class BaseSequenceManager(ABC):
 
@@ -126,6 +128,7 @@ class BaseSequenceManager(ABC):
                 # triggers the preemption
                 continue
             self._pause_seq(scheduled_seq_metadata.seq_id)
+            # logger.info(f"XY: Processing seq_id: {scheduled_seq_metadata.seq_id}, len: {scheduled_seq_metadata.prompt_chunk_len}")  
             self._process_seq_output(
                 scheduled_seq_metadata.seq_id,
                 sampler_output,
