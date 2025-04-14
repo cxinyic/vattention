@@ -78,11 +78,11 @@ std::thread gc_thread;
 bool deferred_reclaim = true;
 
 /* memory allocator specific. page_size is in bytes */
-u64 page_size = 2 * MB;
+u64 page_size = 4 * MB;
 
 static inline bool is_uvm_backend(u64 page_size)
 {
-    return page_size != 2 * MB;
+    return page_size != 4 * MB;
 }
 
 void init_kvcache_batch_metadata()

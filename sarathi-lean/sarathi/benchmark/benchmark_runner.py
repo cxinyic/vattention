@@ -473,6 +473,17 @@ class BenchmarkRunner:
                             logger.info(f"Replica {self._replica_id} has enough blocks before drain timeout, stopping for upgrade")
                     return "UPGRADE_NEEDED"
 
+            # if self._is_new_runner and len(self._requests) - num_processed_requests <= 40:
+            #     # let it exit because we don't care the rest execution
+            #     if is_pipeline_engine:
+            #         # Signal stop if not already in drain mode
+            #         if not is_wait_mode or drain_mode_start_time is None:
+            #             logger.info(f"Replica {self._replica_id} signaling pipeline to stop scheduling")
+            #         self._llm_engine.signal_stop_scheduling()
+            #         logger.info(f"Replica {self._replica_id} signaled for upgrade after {elapsed_time:.2f} seconds")
+            #         while self._llm_engine.has_inflight_batches():
+            #             time.sleep(0.01)  # Small sleep to prevent busy waiting
+            #     break
             step_outputs = self._llm_engine.step()
             num_steps += 1
 
@@ -522,11 +533,11 @@ class BenchmarkRunner:
                 'ttft': state.get('ttft', None),  # Save Time To First Token
                 'tpot': state.get('tpot', None)   # Save Time Per Output Token
             }
-            logger.info(f"Saving progress for finished request {seq_id}, latency is {state.get('latency', None)}, ttft is {state.get('ttft', None)}, tpot is {state.get('tpot', None)}")
+            # logger.info(f"Saving progress for finished request {seq_id}, latency is {state.get('latency', None)}, ttft is {state.get('ttft', None)}, tpot is {state.get('tpot', None)}")
         
         # Save pending requests with their timing metrics for continued tracking
         for seq_id, state in self._pending_requests.items():
-            logger.info(f"Saving progress for pending request {seq_id}, prompt_token_ids is {len(state['prompt_token_ids'])}, generated_token_ids_so_far is {len(state['current_token_ids'])}")
+            # logger.info(f"Saving progress for pending request {seq_id}, prompt_token_ids is {len(state['prompt_token_ids'])}, generated_token_ids_so_far is {len(state['current_token_ids'])}")
             
             # Basic request info
             pending_info = {
@@ -624,7 +635,8 @@ class BenchmarkRunner:
         elif reschedule_policy == UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS:
             # Sort by number of generated tokens (fewer first), then by arrival time
             # This prioritizes requests with less prefill progress
-            pending_list.sort(key=lambda x: (x['generated_tokens_count'], x['original_arrival_time']))
+            # TODO(XY): change a little bit
+            pending_list.sort(key=lambda x: (x['generated_tokens_count'], x['original_arrival_time']), reverse=True)
             logger.info("Sorting pending requests by prefill progress (less progress first), then arrival time")
         
         # Process sorted pending requests
@@ -759,9 +771,12 @@ class BenchmarkRunner:
         status = self._run_normal()
 
         if status == "UPGRADE_NEEDED":
+            logger.info("XY: before save progress")
             progress, tracker = self.save_progress()
-            metrics = self._llm_engine.get_metric_store()
-            self._llm_engine.cleanup()
+            logger.info("XY: after save progress")
+            # metrics = self._llm_engine.get_metric_store()
+            # self._llm_engine.cleanup()
+            # logger.info("XY: after llm engine cleanup")
             return {"status": "UPGRADE_NEEDED", "progress": progress, "tracker": tracker}
 
         self._llm_engine.pull_worker_metrics()

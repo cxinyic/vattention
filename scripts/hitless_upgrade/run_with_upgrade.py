@@ -56,7 +56,7 @@ def create_config(
         # request generator config
         "request_generator_provider": "synthetic",
         "synthetic_request_generator_interval_provider": "static",
-        "synthetic_request_generator_num_requests": batch_size * 2 ,
+        "synthetic_request_generator_num_requests": batch_size  ,
         # uniform only
         "synthetic_request_generator_length_provider": "uniform",
         "trace_request_length_generator_trace_file": online_trace_file,
@@ -75,8 +75,8 @@ def create_config(
         # scheduler config
         "replica_scheduler_provider": "sarathi",
         "replica_scheduler_max_batch_size": batch_size,
-        "sarathi_scheduler_chunk_size": 2097152,
-        "vllm_scheduler_max_tokens_in_batch": 2097152,
+        "sarathi_scheduler_chunk_size": 2097152 * 2,
+        "vllm_scheduler_max_tokens_in_batch": 2097152 * 2,
         
         # metrics config
         "metrics_store_enable_op_level_metrics": False,
@@ -150,7 +150,7 @@ def run_benchmark(
         output_dir = os.path.join(
             base_output_dir,
             f"bs_{batch_size}",
-            "gpu_2_to_4",
+            "gpu_4_to_4",
             upgrade_config.serving_strategy.name.lower(),
             upgrade_config.drain_strategy.name.lower(),
             upgrade_config.selection_policy.name.lower(),
@@ -178,7 +178,7 @@ def run_benchmark(
         attn_backend=attn_backend,
         output_dir=output_dir,
         tp_degree=2,
-        pp_degree=1,
+        pp_degree=2,
         upgrade_config=old_engine_config
     )
     
@@ -224,21 +224,22 @@ def run_benchmark(
 def main():
     """Main function to run benchmarks with different configurations"""
     # Configuration variables
-    models = ["01-ai/Yi-Coder-1.5B"]
+    # models = ["01-ai/Yi-Coder-1.5B"]
+    models = ["01-ai/Yi-6B"]
     attn_backends = ["fa_vattn"]
     batch_sizes = [32]
     
     # Create the upgrade configuration once
-    # upgrade_config = UpgradeConfig(
-    #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=40,
-    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-    #     drain_timeout=0,
-    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-    #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
-    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
-    # )
+    upgrade_config = UpgradeConfig(
+        strategy=UpgradeStrategy.Mode.UPGRADE,
+        upgrade_time=0,
+        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+        drain_timeout=0,
+        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+        serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+    )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
     #     upgrade_time=40,
@@ -261,7 +262,7 @@ def main():
     # )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=40,
+    #     upgrade_time=30,
     #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
     #     drain_timeout=0,
     #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
@@ -271,7 +272,7 @@ def main():
     # )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=40,
+    #     upgrade_time=30,
     #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
     #     drain_timeout=0,
     #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
@@ -279,17 +280,17 @@ def main():
     #     serving_strategy=UpgradeStrategy.ServingStrategy.NO_SERVE,
     #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
     # )
-    upgrade_config = UpgradeConfig(
-        strategy=UpgradeStrategy.Mode.UPGRADE,
-        upgrade_time=40,
-        original_gpu_count=2,
-        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-        drain_timeout=0,
-        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-        selection_policy=UpgradeStrategy.SelectionPolicy.BY_FINISH_TIME,
-        serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
-        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
-    )
+    # upgrade_config = UpgradeConfig(
+    #     strategy=UpgradeStrategy.Mode.UPGRADE,
+    #     upgrade_time=40,
+    #     original_gpu_count=2,
+    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+    #     drain_timeout=0,
+    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_FINISH_TIME,
+    #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+    # )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.NO_UPGRADE
     # )

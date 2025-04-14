@@ -662,7 +662,6 @@ public:
 
     void remove_physical_blocks(u64 required_blocks) {
         u64 free_blocks;
-        
         if (!is_uvm_backend(page_size)) {
             free_blocks = cuda_pages.size();
             if (free_blocks < required_blocks) {
@@ -676,11 +675,15 @@ public:
             log.log("Number of overcommitted KV blocks: " + std::to_string(get_num_overcommitted_kvblocks()));
             
             // Remove blocks from cuda_pages and release physical memory
+            auto total_start = std::chrono::high_resolution_clock::now();
             for (u64 i = 0; i < required_blocks; i++) {
                 CUmemGenericAllocationHandle handle = cuda_pages.back();
                 CHECK_CUDA(cuMemRelease(handle));
                 cuda_pages.pop_back();
             }
+            auto total_end = std::chrono::high_resolution_clock::now();
+            auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start).count();
+            log.log("Total remove_physical_blocks time: " + std::to_string(total_duration) + " ms");
             log.log("Removed and released " + std::to_string(required_blocks) + " blocks from CUDA free pool");
             log.log("Number of physical pages in cuda_pages: " + std::to_string(cuda_pages.size()));
             log.log("Number of free KV blocks remaining: " + std::to_string(get_num_free_kvblocks()));
@@ -701,6 +704,7 @@ public:
             }
             log.log("Removed and released " + std::to_string(required_blocks) + " blocks from UVM free pool");
         }
+        
     }
 };
 

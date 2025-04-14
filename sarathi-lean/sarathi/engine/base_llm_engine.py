@@ -279,24 +279,29 @@ class BaseLLMEngine:
     def _init_cache(self) -> None:
         """Profiles the memory usage and initializes the KV cache."""
         # Get the maximum number of blocks that can be allocated on GPU.
-        output_all = self._run_workers(
-            "profile_num_available_blocks",
-            get_all_outputs=True,
-            block_size=self.cache_config.block_size,
-            gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
-        )
-        
-        # exit(0)
-        num_gpu_blocks_across_workers, physical_memory_all = map(list, zip(*output_all))
+        if self.upgrade_engine_type == "disable":
+            num_gpu_blocks = 118
+            physical_memory = 39861704601 
+            logger.info("XY: skip profile")
+        else: 
+            output_all = self._run_workers(
+                "profile_num_available_blocks",
+                get_all_outputs=True,
+                block_size=self.cache_config.block_size,
+                gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
+            )
+            
+            # exit(0)
+            num_gpu_blocks_across_workers, physical_memory_all = map(list, zip(*output_all))
 
-        # Since we use a shared centralized controller, we take the minimum
-        # number of blocks across all workers to make sure all the memory
-        # operators can be applied to all workers.
-        num_gpu_blocks = min(num_gpu_blocks_across_workers)
-        physical_memory = min(physical_memory_all)
+            # Since we use a shared centralized controller, we take the minimum
+            # number of blocks across all workers to make sure all the memory
+            # operators can be applied to all workers.
+            num_gpu_blocks = min(num_gpu_blocks_across_workers)
+            physical_memory = min(physical_memory_all)
 
         # FIXME(woosuk): Change to debug log.
-        logger.info(f"# GPU blocks: {num_gpu_blocks}")
+        logger.info(f"# GPU blocks: {num_gpu_blocks}, physical_memory is {physical_memory}")
 
         if num_gpu_blocks <= 0:
             raise ValueError(

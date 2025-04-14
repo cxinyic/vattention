@@ -290,7 +290,7 @@ class BenchmarkRunnerLauncher:
                 if self._runner.is_pipeline_engine:
                     logger.info("Stopping pipeline engine execution loops")
                     self._runner._llm_engine.stop_execution_loops()
-                self._runner._llm_engine.cleanup()
+                # self._runner._llm_engine.cleanup()
                 del self._runner
 
                 saved_progress = result["progress"]
@@ -304,12 +304,12 @@ class BenchmarkRunnerLauncher:
                             ray.kill(worker)
                         except Exception as e:
                             logger.error(f"Error cleaning up old worker: {e}")
-
+                logger.info("XY: finish killing ray workers")
                 # Force CUDA cleanup
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 torch.cuda.ipc_collect()
-                log_memory_usage("AFTER FORCE CLEANUP")
+                # log_memory_usage("AFTER FORCE CLEANUP")
 
                 if new_runner is not None:
                     new_runner._llm_engine.init_rest()
@@ -324,15 +324,15 @@ class BenchmarkRunnerLauncher:
     def _run_without_overlap_upgrade(self):
         """Run single replica upgrade without overlap serving."""
         result = self._runner.run()
-        
+        logger.info("XY: finish previous run")
         if isinstance(result, dict) and result["status"] == "UPGRADE_NEEDED":
             progress = result["progress"]
             track = result["tracker"]
-            
+            logger.info("XY: stop serving and shutdown Ray")
             # Clean up Ray resources
             ray.shutdown()
             ray.init(ignore_reinit_error=True)
-            
+            logger.info("XY: ray init again")
             # Calculate new resource mapping based on new config
             new_resource_mapping = self._get_replica_resource_mapping_for_config(self._new_config)
             

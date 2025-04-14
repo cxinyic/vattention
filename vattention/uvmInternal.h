@@ -229,7 +229,7 @@ u64 reserve_uvm_pages(u64 num_layers, u64 free_memory, u64 page_size)
 {
     Log log;
     u64 num_phys_blocks = get_num_phys_blocks(num_layers, free_memory, page_size);
-    log.log("Reserving " + std::to_string(num_phys_blocks) + " pages " + std::to_string(page_size) + " ...");
+    log.log("UVM Reserving " + std::to_string(num_phys_blocks) + " pages " + std::to_string(page_size) + " ...");
 
     while (uvm_pages.size() < num_phys_blocks)
     {

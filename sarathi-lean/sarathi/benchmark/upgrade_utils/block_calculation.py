@@ -89,7 +89,7 @@ def calculate_block_size(
     Returns:
         Total block size in bytes
     """
-    PAGE_SIZE = 2 * 1024 * 1024  # 2MB in bytes
+    PAGE_SIZE = 4 * 1024 * 1024  # 2MB in bytes
     
     # First calculate the initial block size from page size
     num_kv_heads_per_worker = (
@@ -175,7 +175,7 @@ def calculate_required_blocks(
     
     # Calculate number of blocks needed
     required_blocks = math.ceil(required_memory / current_block_size)
-    PAGE_SIZE = 2 * 1024 * 1024
+    PAGE_SIZE = 4 * 1024 * 1024
     pages_per_block = current_block_size / PAGE_SIZE
     logger.info("Memory Calculation Details:")
     logger.info(f"New model weights per GPU: {new_params_per_gpu:,} parameters")

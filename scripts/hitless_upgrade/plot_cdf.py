@@ -19,24 +19,36 @@ def plot_metric_cdf(latency_files: dict, metric: str, output_path: str, title: s
         if os.path.exists(file_path):
             df = pd.read_csv(file_path)
             if metric in df.columns:
-                values = sorted(df[metric].values)
-                n = len(values)
-                cumulative_prob = np.arange(1, n + 1) / n
+                # When reading the CSV file, pandas should automatically convert empty strings to NaN
+                # But let's make sure by explicitly checking for them
+                df[metric] = pd.to_numeric(df[metric], errors='coerce')  # This will convert empty strings and non-numeric values to NaN
+                filtered_df = df.dropna(subset=[metric])
                 
-                line = plt.plot(values, cumulative_prob, '-', linewidth=2, label=label)[0]
-                color = line.get_color()
-                
-                # Add percentile lines and print statistics
-                percentiles = [50, 90, 95, 99]
-                print(f"\nStatistics for {label} - {metric}:")
-                for i, p in enumerate(percentiles):
-                    percentile_value = np.percentile(values, p)
-                    plt.axvline(x=percentile_value, color=color, linestyle='--', alpha=0.2)
-                    print(f"p{p}: {percentile_value:.2f}s")
-                
-                # Print mean and count
-                print(f"Mean: {df[metric].mean():.2f}s")
-                print(f"Count: {len(df)}")
+                if len(filtered_df) > 0:
+                    values = sorted(filtered_df[metric].values)
+                    n = len(values)
+                    cumulative_prob = np.arange(1, n + 1) / n
+                    
+                    line = plt.plot(values, cumulative_prob, '-', linewidth=2, label=label)[0]
+                    color = line.get_color()
+                    
+                    # Add percentile lines and print statistics
+                    percentiles = [50, 90, 95, 99]
+                    print(f"\nStatistics for {label} - {metric}:")
+                    for i, p in enumerate(percentiles):
+                        percentile_value = np.percentile(values, p)
+                        plt.axvline(x=percentile_value, color=color, linestyle='--', alpha=0.2)
+                        print(f"p{p}: {percentile_value:.2f}s")
+                    
+                    # Print mean and count
+                    print(f"Mean: {filtered_df[metric].mean():.2f}s")
+                    print(f"Count: {len(filtered_df)} (of {len(df)} total)")
+                    
+                    # If data was filtered, print how many points were dropped
+                    if len(filtered_df) < len(df):
+                        print(f"Note: {len(df) - len(filtered_df)} data points were filtered out due to missing {metric} values")
+                else:
+                    print(f"Warning: No valid data for {metric} in {file_path} after filtering out missing values")
             else:
                 print(f"Warning: Metric {metric} not found in {file_path}")
         else:
@@ -44,18 +56,18 @@ def plot_metric_cdf(latency_files: dict, metric: str, output_path: str, title: s
     
     # Customize x-axis label based on metric
     if metric == "e2e_latency_seconds":
-        plt.xlabel('End-to-End Latency (seconds)')
+        plt.xlabel('E2E Latency (seconds)', fontsize=20)  # Adjust the number as needed
     elif metric == "ttft_seconds":
-        plt.xlabel('Time to First Token (seconds)')
+        plt.xlabel('TTFT (seconds)', fontsize=20)
     elif metric == "tpot_seconds":
-        plt.xlabel('Time per Output Token (seconds)')
+        plt.xlabel('Time per Output Token (seconds)', fontsize=20)
     else:
-        plt.xlabel(f'{metric} (seconds)')
+        plt.xlabel(f'{metric} (seconds)', fontsize=20)
         
-    plt.ylabel('Cumulative Probability')
-    plt.title(title)
+    plt.ylabel('CDF', fontsize=20)
+    # plt.title(title)
     plt.grid(True, which='both', linestyle='--', alpha=0.7)
-    plt.legend()
+    plt.legend(fontsize=16,loc='lower right')
     
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -66,21 +78,9 @@ def plot_metric_cdf(latency_files: dict, metric: str, output_path: str, title: s
 
 def main():
     latency_files = {
-        # "No Upgrade": "logs/hitless_upgrade/bs_32/no_upgrade/latencies.csv",
-        # "Upgrade|No Overlap Serving": "logs/hitless_upgrade/bs_32/no_serve/latencies.csv",
-        # "Overlap Decode|kickout|select_by_to_finish|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/decode_only/kickout_immediately/by_finish_time/by_arrival_time/latencies.csv",
-        # "Overlap Decode|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        # "Overlap Decode|kickout|select_by_arrival|reschedule_by_prefill": "logs/hitless_upgrade/bs_32/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
-        # "Overlap Decode|wait_then_kick|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/decode_only/wait_then_kickout/by_arrival_time/by_arrival_time/latencies.csv",
-        # "Overlap Prefill|kickout|select_by_arrival|reschedule_by_arrival":
-        # "logs/hitless_upgrade/bs_32/prefill_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        "No Upgrade": "logs/hitless_upgrade/bs_32/no_upgrade/latencies.csv",
-        "Upgrade|No Overlap Serving": "logs/hitless_upgrade/bs_32/gpu_2_to_4/no_serve/latencies.csv",
-        "Overlap Decode|kickout|select_by_to_finish|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_finish_time/by_arrival_time/latencies.csv",
-        "Overlap Decode|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        "Overlap Decode|kickout|select_by_arrival|reschedule_by_prefill": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
-        "Overlap Decode|wait_then_kick|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/decode_only/wait_then_kickout/by_arrival_time/by_arrival_time/latencies.csv",
-        "Overlap Prefill|kickout|select_by_arrival|reschedule_by_arrival": "logs/hitless_upgrade/bs_32/gpu_2_to_4/prefill_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        "Baseline": "logs/hitless_upgrade/bs_100/trace/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        "Overlap with FCFS": "logs/hitless_upgrade/bs_100/trace/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        "Overlap with Upgrade Scheduler": "logs/hitless_upgrade/bs_100/trace/prefill_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
     }
     
     # Create output directory
@@ -91,21 +91,21 @@ def main():
     plot_metric_cdf(
         latency_files,
         metric="e2e_latency_seconds",
-        output_path=f"{output_dir}/e2e_latency_cdf.png",
+        output_path=f"{output_dir}/e2e_latency_cdf.pdf",
         title="End-to-End Latency CDF Comparison"
     )
     
     plot_metric_cdf(
         latency_files,
         metric="ttft_seconds",
-        output_path=f"{output_dir}/ttft_cdf.png",
+        output_path=f"{output_dir}/ttft_cdf.pdf",
         title="Time to First Token CDF Comparison"
     )
     
     plot_metric_cdf(
         latency_files,
         metric="tpot_seconds",
-        output_path=f"{output_dir}/tpot_cdf.png",
+        output_path=f"{output_dir}/tpot_cdf.pdf",
         title="Time per Output Token CDF Comparison"
     )
 

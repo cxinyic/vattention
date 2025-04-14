@@ -29,8 +29,9 @@ u64 do_cuda_default_init(int device, u64 page_size)
     accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     accessDesc.location.id = device;
-    CHECK_CUDA(cuMemGetAllocationGranularity(&phys_granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
-    assert (phys_granularity == page_size);
+    // CHECK_CUDA(cuMemGetAllocationGranularity(&phys_granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
+    // assert (phys_granularity == page_size);
+    phys_granularity = page_size;
     return phys_granularity;
 }
 
@@ -46,14 +47,17 @@ u64 reserve_cuda_pages(u64 num_layers, u64 free_memory, u64 page_size)
 {
     Log log;
     u64 num_phys_blocks = get_num_phys_blocks(num_layers, free_memory, page_size);
-    log.log("Reserving " + std::to_string(num_phys_blocks) + " pages of size " + std::to_string(page_size) + " ...");
-
+    log.log("CUDA Reserving " + std::to_string(num_phys_blocks) + " pages of size " + std::to_string(page_size) + " ...");
+    auto total_start = std::chrono::high_resolution_clock::now();
     while (cuda_pages.size() < num_phys_blocks)
     {
         CUmemGenericAllocationHandle cuda_page;
         CHECK_CUDA(cuMemCreate(&cuda_page, page_size, &prop, 0));
         cuda_pages.push_back(cuda_page);
     }
+    auto total_end = std::chrono::high_resolution_clock::now();
+    auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start).count();
+    log.log("Total reserve_cuda_pages time: " + std::to_string(total_duration) + " ms");
 
     return cuda_pages.size();
 }

@@ -74,7 +74,7 @@ def get_block_or_page_size(attn_backend):
     elif '256kb' in attn_backend.lower():
         return 256 * KB
     elif '2mb' in attn_backend.lower():
-        return 2 * MB
+        return 4 * MB
     elif 'fa_paged' in attn_backend.lower():
         return attn_backend.split('_')[-1]
     elif 'fi_paged' in attn_backend.lower():

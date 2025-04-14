@@ -29,7 +29,7 @@ class vATTNCacheEngine(BaseCacheEngine):
         parallel_config: ParallelConfig,
         mem_alloc_backend: str,
     ) -> None:
-        # vattention.set_verbose(True)
+        vattention.set_verbose(True)
         self.max_batch_size = cache_config.max_batch_size
         self.device = torch.empty(1).cuda().device if not in_wsl() else torch.device("cuda")
         self.device_idx = int(str(self.device).split(":")[-1])
@@ -46,6 +46,7 @@ class vATTNCacheEngine(BaseCacheEngine):
         return vattention.num_free_kvblocks()
 
     def allocate_gpu_cache(self) -> List[torch.Tensor]:
+        logger.info("XY: init kvcache")
         kv_cache = vattention.init_kvcache(
                                     self.num_layers,
                                     self.num_heads,
@@ -76,7 +77,9 @@ class vATTNCacheEngine(BaseCacheEngine):
                 assert v_cache[i].device == self.device, \
                             "v_cache device mismatch expected: {}, got: {}".format(self.device, self.v_cache[i].device)
             cache_list = list(zip(k_cache, v_cache))
+        logger.info("XY: reserve_physical_pages")
         vattention.reserve_physical_pages(self.cache_mem_size)
+        logger.info("XY: finish reserve_physical_pages")
         return cache_list
 
     def preempt_requests(self, preempted_seq: List[int]) -> None:
@@ -169,6 +172,7 @@ class vATTNCacheEngine(BaseCacheEngine):
     def free_physical_blocks(self, nr_physical_blocks: int) -> None:
         logger.info(f"Cache Engine: Releasing {nr_physical_blocks} physical blocks")
         vattention.remove_physical_blocks(nr_physical_blocks)
+        logger.info(f"FINISH Cache Engine: Releasing {nr_physical_blocks} physical blocks")
 
     def reclaim_req_ids(self) -> None:
         for seq_id in list(self.seq_to_batch_idx.keys()):

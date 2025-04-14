@@ -6,7 +6,7 @@ MB = (1024 * 1024)
 GB = (1024 * MB)
 # reserve memory for the kv cache
 GPU_MEM_RESERVE = (70*GB)
-PAGE_SIZE = (2 * MB)
+PAGE_SIZE = (4 * MB)
 USE_UVM = False
 
 NUM_LAYERS=32
