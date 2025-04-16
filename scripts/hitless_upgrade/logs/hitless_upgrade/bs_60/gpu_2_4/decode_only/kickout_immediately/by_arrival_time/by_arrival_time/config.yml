@@ -1,0 +1,62 @@
+model: 01-ai/Yi-34B-200K
+replica_id: 0
+replica_resource_mapping:
+- !!python/tuple
+  - node:172.22.0.2
+  - 0
+- !!python/tuple
+  - node:172.22.0.2
+  - 1
+tokenizer: 01-ai/Yi-34B-200K
+tokenizer_mode: auto
+trust_remote_code: true
+download_dir: null
+load_format: auto
+dtype: float16
+seed: 42
+pipeline_parallel_size: 1
+tensor_parallel_size: 2
+block_size: 4194304
+gpu_memory_utilization: 0.9
+revision: null
+scheduler_type: sarathi
+max_model_len: 16384
+max_num_seqs: 60
+max_num_batched_tokens: 2097152
+chunk_size: 2097152
+enable_dynamic_chunking_schedule: null
+low_chunk_size: null
+high_chunk_size: null
+chunk_schedule_max_tokens: null
+chunk_schedule_stages: null
+write_metrics: true
+output_dir: logs/hitless_upgrade/bs_60/gpu_2_4/decode_only/kickout_immediately/by_arrival_time/by_arrival_time
+wandb_project: null
+wandb_sweep_id: null
+wandb_run_id: null
+wandb_group: null
+wandb_run_name: null
+enable_op_level_metrics: false
+enable_cpu_op_level_metrics: false
+enable_chrome_trace: false
+enable_request_outputs: false
+keep_individual_batch_metrics: true
+attention_backend: fa_vattn
+strategy: !!python/object/apply:sarathi.config.Mode
+- 2
+time: 30
+required_blocks: null
+pages_per_block: null
+engine_type: new
+original_gpu_count: null
+drain_strategy: !!python/object/apply:sarathi.config.DrainStrategy
+- 1
+drain_timeout: 0
+kickout_strategy: !!python/object/apply:sarathi.config.KickoutStrategy
+- 2
+selection_policy: !!python/object/apply:sarathi.config.SelectionPolicy
+- 1
+serving_strategy: !!python/object/apply:sarathi.config.ServingStrategy
+- 2
+reschedule_policy: !!python/object/apply:sarathi.config.ReschedulePolicy
+- 1

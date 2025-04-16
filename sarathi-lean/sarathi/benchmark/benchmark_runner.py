@@ -8,6 +8,8 @@ import time
 from typing import Dict, Any, Optional
 
 from tqdm import tqdm
+from threading import Thread
+from queue import Queue, Empty
 
 from sarathi import LLMEngine, SamplingParams
 from sarathi.benchmark.config import Config
@@ -369,6 +371,40 @@ class BenchmarkRunner:
             # For ongoing requests, update the pending queue
             self._pending_requests[seq_id] = updated_state
 
+    # def run_during_upgrade(self) -> dict:
+    #     """Continue running with reduced capacity during upgrade."""
+    #     self._llm_engine.scheduler.set_upgrade()
+    #     logger.info("Starting serving during upgrade")
+    #     num_processed_requests = 0
+    #     num_steps = 0
+    #     pbar = tqdm(
+    #         total=len(self._requests),
+    #         desc=f"Replica {self._replica_id} running during upgrade",
+    #     )
+    #     is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
+    #     if is_pipeline_engine:
+    #         logger.info("Starting pipeline engine execution loops")
+    #         self._llm_engine.signal_start_scheduling()
+    #     while not self.upgrade_state.is_weights_loaded():
+    #         step_outputs = self._llm_engine.step()
+    #         num_steps += 1
+
+    #         for output in step_outputs:
+    #             self._update_request_state(output)
+    #             if output.finished:
+    #                 num_processed_requests += 1
+    #                 pbar.update(1)
+    #     logger.info("Stop serving during upgrade")
+    #     if is_pipeline_engine:
+    #         self._llm_engine.signal_stop_scheduling()
+    #         logger.info("Stopping pipeline engine execution loops")
+            
+    #         while self._llm_engine.has_inflight_batches():
+    #             time.sleep(0.01)
+    #     pbar.close()
+    #     progress, tracker = self.save_progress()
+    #     return {"status": "READY_FOR_HANDOVER", "progress": progress, "tracker": tracker}
+
     def run_during_upgrade(self) -> dict:
         """Continue running with reduced capacity during upgrade."""
         self._llm_engine.scheduler.set_upgrade()
@@ -383,19 +419,64 @@ class BenchmarkRunner:
         if is_pipeline_engine:
             logger.info("Starting pipeline engine execution loops")
             self._llm_engine.signal_start_scheduling()
+        
+        # Step timeout in seconds
+        step_timeout = 2
+    
         while not self.upgrade_state.is_weights_loaded():
-            step_outputs = self._llm_engine.step()
-            num_steps += 1
-
-            for output in step_outputs:
-                self._update_request_state(output)
-                if output.finished:
-                    num_processed_requests += 1
-                    pbar.update(1)
+            # Create a timeout mechanism for the step() call
+            step_output_queue = Queue()
+            
+            def step_thread_func():
+                try:
+                    result = self._llm_engine.step()
+                    step_output_queue.put(("success", result))
+                except Exception as e:
+                    logger.error(f"Error in step thread: {e}")
+                    step_output_queue.put(("error", e))
+        
+            # Start thread to call step() so we can timeout if it hangs
+            step_thread = Thread(target=step_thread_func, daemon=True)
+            step_thread.start()
+            
+            try:
+                # Wait for step result with timeout
+                result_type, step_outputs = step_output_queue.get(timeout=step_timeout)
+                
+                if result_type == "error":
+                    logger.warning(f"step() call failed: {step_outputs}")
+                    time.sleep(0.1)  # Brief pause before retrying
+                    continue
+            
+                # Process step outputs normally
+                num_steps += 1
+                for output in step_outputs:
+                    self._update_request_state(output)
+                    if output.finished:
+                        num_processed_requests += 1
+                        pbar.update(1)
+                        
+            except Empty:
+                logger.warning(f"step() call timed out after {step_timeout}s, might be stuck")
+                # Try to reset the engine's scheduling
+                try:
+                    logger.info("Attempting to unblock engine...")
+                    # Optionally reset the engine scheduling
+                    if is_pipeline_engine:
+                        self._llm_engine.signal_stop_scheduling()
+                        time.sleep(0.5)
+                        self._llm_engine.signal_start_scheduling()
+                except Exception as e:
+                    logger.error(f"Error trying to reset engine scheduling: {e}")
+        
         logger.info("Stop serving during upgrade")
         if is_pipeline_engine:
             self._llm_engine.signal_stop_scheduling()
             logger.info("Stopping pipeline engine execution loops")
+            
+            while self._llm_engine.has_inflight_batches():
+                time.sleep(0.01)
+        
         pbar.close()
         progress, tracker = self.save_progress()
         return {"status": "READY_FOR_HANDOVER", "progress": progress, "tracker": tracker}
@@ -473,7 +554,7 @@ class BenchmarkRunner:
                             logger.info(f"Replica {self._replica_id} has enough blocks before drain timeout, stopping for upgrade")
                     return "UPGRADE_NEEDED"
 
-            # if self._is_new_runner and len(self._requests) - num_processed_requests <= 40:
+            # if self._is_new_runner and len(self._requests) - num_processed_requests <= 250:
             #     # let it exit because we don't care the rest execution
             #     if is_pipeline_engine:
             #         # Signal stop if not already in drain mode

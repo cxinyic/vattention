@@ -25,13 +25,14 @@ from huggingface_hub import login
 
 
 
+
 def create_config(
     model: str,
     batch_size: int,
     attn_backend: str,
     output_dir: str,
     upgrade_config: UpgradeConfig,
-    context_length: int = 4608,
+    context_length: int = 2048,
     block_size: int = None,
     tp_degree: int = 4,
     pp_degree: int = 1,
@@ -62,13 +63,13 @@ def create_config(
         # request generator config
         "request_generator_provider": "synthetic",
         "synthetic_request_generator_interval_provider": "static",
-        "synthetic_request_generator_num_requests": batch_size  ,
+        "synthetic_request_generator_num_requests": batch_size *2  ,
         # uniform only
         # "synthetic_request_generator_length_provider": "uniform",
         # "trace_request_length_generator_trace_file": online_trace_file,
-        # "uniform_request_length_generator_max_tokens": context_length * 2,
-        # "uniform_request_length_generator_min_tokens": context_length,
-        # "uniform_request_length_generator_prefill_to_decode_ratio": 8,
+        # "uniform_request_length_generator_max_tokens": 786,
+        # "uniform_request_length_generator_min_tokens": 256,
+        # "uniform_request_length_generator_prefill_to_decode_ratio": 4,
 
         # trace only
         "synthetic_request_generator_length_provider": "trace",
@@ -76,7 +77,7 @@ def create_config(
         "trace_request_length_generator_prefill_scale_factor": 1,
         "trace_request_length_generator_decode_scale_factor": 1,
         "trace_request_length_generator_min_tokens": 500,
-        "trace_request_length_generator_max_tokens": context_length,
+        "trace_request_length_generator_max_tokens": 1500,
         
         # scheduler config
         "replica_scheduler_provider": "sarathi",
@@ -156,7 +157,7 @@ def run_benchmark(
         output_dir = os.path.join(
             base_output_dir,
             f"bs_{batch_size}",
-            "trace",
+            "gpu_2_4",
             upgrade_config.serving_strategy.name.lower(),
             upgrade_config.drain_strategy.name.lower(),
             upgrade_config.selection_policy.name.lower(),
@@ -183,8 +184,8 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=2,
-        pp_degree=2,
+        tp_degree=4,
+        pp_degree=1,
         upgrade_config=old_engine_config
     )
     
@@ -207,7 +208,7 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=4,
+        tp_degree=2,
         pp_degree=1,
         upgrade_config=new_engine_config
     )
@@ -231,15 +232,16 @@ def main():
     """Main function to run benchmarks with different configurations"""
     # Configuration variables
     # models = ["01-ai/Yi-Coder-1.5B"]
-    # models = ["01-ai/Yi-6B"]
-    models = ["meta-llama/Llama-2-70b-hf"]
+    models = ["01-ai/Yi-34B-200K"]
+    # models = ["meta-llama/Llama-2-70b-hf"]
     attn_backends = ["fa_vattn"]
-    batch_sizes = [100]
+    batch_sizes = [60]
     
     # Create the upgrade configuration once
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=20,
+    #     upgrade_time=30,
+    #     # original_gpu_count=2,
     #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
     #     drain_timeout=0,
     #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
@@ -257,19 +259,20 @@ def main():
     #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
     #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
     # )
-    upgrade_config = UpgradeConfig(
-        strategy=UpgradeStrategy.Mode.UPGRADE,
-        upgrade_time=20,
-        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-        drain_timeout=0,
-        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-        serving_strategy=UpgradeStrategy.ServingStrategy.PREFILL_ONLY,
-        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
-    )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
     #     upgrade_time=20,
+    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+    #     drain_timeout=0,
+    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+    #     serving_strategy=UpgradeStrategy.ServingStrategy.PREFILL_ONLY,
+    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
+    # )
+    # upgrade_config = UpgradeConfig(
+    #     strategy=UpgradeStrategy.Mode.UPGRADE,
+    #     upgrade_time=30,
+
     #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
     #     drain_timeout=0,
     #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
@@ -277,16 +280,17 @@ def main():
     #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
     #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
     # )
-    # upgrade_config = UpgradeConfig(
-    #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=20,
-    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-    #     drain_timeout=0,
-    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-    #     serving_strategy=UpgradeStrategy.ServingStrategy.NO_SERVE,
-    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
-    # )
+    upgrade_config = UpgradeConfig(
+        strategy=UpgradeStrategy.Mode.UPGRADE,
+        upgrade_time=30,
+        # original_gpu_count=2,
+        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+        drain_timeout=0,
+        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+        serving_strategy=UpgradeStrategy.ServingStrategy.NO_SERVE,
+        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+    )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
     #     upgrade_time=40,
@@ -303,7 +307,7 @@ def main():
     # )
     
     # Run experiments with all configurations
-    monitor = GPUMonitor(interval=0.5, output_file="gpu_utilization_prefill.csv")
+    monitor = GPUMonitor(interval=0.5, output_file="gpu_utilization_noserve.csv")
     monitor.start()
     try: 
         for model in models:

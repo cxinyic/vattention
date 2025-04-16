@@ -230,16 +230,16 @@ def main():
     batch_sizes = [32]
     
     # Create the upgrade configuration once
-    upgrade_config = UpgradeConfig(
-        strategy=UpgradeStrategy.Mode.UPGRADE,
-        upgrade_time=0,
-        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-        drain_timeout=0,
-        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-        serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
-        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
-    )
+    # upgrade_config = UpgradeConfig(
+    #     strategy=UpgradeStrategy.Mode.UPGRADE,
+    #     upgrade_time=20,
+    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+    #     drain_timeout=0,
+    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+    #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+    # )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
     #     upgrade_time=40,
@@ -260,16 +260,16 @@ def main():
     #     serving_strategy=UpgradeStrategy.ServingStrategy.PREFILL_ONLY,
     #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
     # )
-    # upgrade_config = UpgradeConfig(
-    #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=30,
-    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-    #     drain_timeout=0,
-    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-    #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
-    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
-    # )
+    upgrade_config = UpgradeConfig(
+        strategy=UpgradeStrategy.Mode.UPGRADE,
+        upgrade_time=20,
+        drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+        drain_timeout=0,
+        kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+        selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+        serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
+    )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
     #     upgrade_time=30,

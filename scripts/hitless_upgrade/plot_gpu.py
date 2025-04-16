@@ -57,8 +57,8 @@ def plot_utilization_metrics(baseline_file, swiftserve_file, output_prefix=None,
         swiftserve_data, 
         'avg_gpu_utilization', 
         'GPU Utilization Comparison: Baseline vs SwiftServe',
-        'Average GPU Utilization (%)',
-        output_prefix + '_gpu_utilization.png' if output_prefix else None
+        'Average Compute Utilization (%)',
+        output_prefix + '_gpu_utilization.pdf' if output_prefix else None
     )
     
     # Plot memory utilization if available
@@ -69,7 +69,7 @@ def plot_utilization_metrics(baseline_file, swiftserve_file, output_prefix=None,
             'avg_memory_utilization', 
             'Memory Utilization Comparison: Baseline vs SwiftServe',
             'Average Memory Utilization (%)',
-            output_prefix + '_memory_utilization.png' if output_prefix else None
+            output_prefix + '_memory_utilization.pdf' if output_prefix else None
         )
     else:
         print("Skipping memory utilization plot due to missing data.")
@@ -104,7 +104,7 @@ def plot_single_metric(baseline_data, swiftserve_data, metric_column, title, yla
     # Add labels and title
     plt.xlabel('Time (seconds)', fontsize=12)
     plt.ylabel(ylabel, fontsize=12)
-    plt.title(title, fontsize=14)
+    # plt.title(title, fontsize=14)
     
     # Add grid for better readability
     plt.grid(True, linestyle='--', alpha=0.5)
@@ -136,9 +136,9 @@ def plot_single_metric(baseline_data, swiftserve_data, metric_column, title, yla
         f"SwiftServe - Mean: {swiftserve_stats['mean']:.2f}%, "
         f"Max: {swiftserve_stats['max']:.2f}%"
     )
-    plt.annotate(stats_text, xy=(0.02, 0.02), xycoords='axes fraction', 
-                 bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.8),
-                 fontsize=10, va='bottom')
+    # plt.annotate(stats_text, xy=(0.02, 0.02), xycoords='axes fraction', 
+    #              bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.8),
+    #              fontsize=10, va='bottom')
     
     # Enhance visual appearance
     plt.tight_layout()

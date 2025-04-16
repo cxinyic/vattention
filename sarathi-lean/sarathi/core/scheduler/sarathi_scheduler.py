@@ -326,7 +326,7 @@ class SarathiScheduler(BaseScheduler):
         
         # Get current free blocks and watermark
         current_free_blocks = self.block_manager.get_num_free_gpu_blocks()
-        watermark_blocks = self.block_manager.get_watermark_blocks()
+        watermark_blocks = self.block_manager.get_watermark_blocks() + 2
         available_free_blocks = max(0, current_free_blocks - watermark_blocks)
         
         logger.info(f"Free blocks: {current_free_blocks}, Watermark: {watermark_blocks}, Available: {available_free_blocks}")

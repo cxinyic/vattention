@@ -240,7 +240,10 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
         """
         if not self.has_started_execution_loops:
             self.start_execution_loops()
+        
+
         return self.output_queue.get()
+        
 
     def has_inflight_batches(self) -> bool:
         """Check if there are any batches still in the pipeline"""
@@ -255,7 +258,7 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
         self.stop_scheduling = False
         self.schedule_event.set()
 
-    def stop_execution_loops(self) -> None:
+    
         """Stop all execution loops gracefully"""
         logger.info("Stopping execution loops")
         
@@ -278,4 +281,65 @@ class PipelineParallelLLMEngine(BaseLLMEngine):
             logger.error(f"Error clearing queues: {e}")
 
         logger.info("Execution loops stopped")
+    # def stop_execution_loops(self) -> None:
+
+    def stop_execution_loops(self) -> None:
+        """Stop all execution loops gracefully"""
+        logger.info("Stopping execution loops")
+        
+        # Signal stop scheduling
+        self.stop_scheduling = True
+        
+        # Wait for inflight batches to complete with timeout
+        max_wait_time = 30  # seconds
+        start_time = time.time()
+        while self.has_inflight_batches():
+            if time.time() - start_time > max_wait_time:
+                logger.warning(f"Timeout waiting for inflight batches after {max_wait_time}s")
+                break
+            logger.info("Waiting for inflight batches to complete")
+            time.sleep(0.1)
+        
+        # Set should_stop flag to exit all threads
+        self.should_stop = True
     
+        # Put sentinel values in queues to unblock threads
+        try:
+            # Put sentinel values to unblock threads waiting on queues
+            self.scheduler_output_queue.put(None)
+            self.output_queue.put(None)
+        except Exception as e:
+            logger.error(f"Error putting sentinel values: {e}")
+        
+        # Set all events to wake up threads
+        self.schedule_event.set()
+        self.microbatch_watch_event.set()
+        
+        # Clean up Ray workers
+        try:
+            self._run_workers("cleanup_pp_worker", ignore_output=True)
+        except Exception as e:
+            logger.error(f"Error cleaning up workers: {e}")
+    
+        # Join threads with timeout to ensure they exit
+        threads = [
+            self.schedule_thread,
+            self.output_thread,
+            self.scheduler_timer_thread,
+            self.microbatch_watch_thread
+        ]
+        
+        for thread in threads:
+            if thread.is_alive():
+                thread.join(timeout=2.0)  # 2 second timeout
+        
+        # Clear queues
+        try:
+            while not self.scheduler_output_queue.empty():
+                self.scheduler_output_queue.get_nowait()
+            while not self.output_queue.empty():
+                self.output_queue.get_nowait()
+        except Exception as e:
+            logger.error(f"Error clearing queues: {e}")
+
+        logger.info("Execution loops stopped")
