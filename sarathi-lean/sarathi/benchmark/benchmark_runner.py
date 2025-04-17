@@ -371,40 +371,6 @@ class BenchmarkRunner:
             # For ongoing requests, update the pending queue
             self._pending_requests[seq_id] = updated_state
 
-    # def run_during_upgrade(self) -> dict:
-    #     """Continue running with reduced capacity during upgrade."""
-    #     self._llm_engine.scheduler.set_upgrade()
-    #     logger.info("Starting serving during upgrade")
-    #     num_processed_requests = 0
-    #     num_steps = 0
-    #     pbar = tqdm(
-    #         total=len(self._requests),
-    #         desc=f"Replica {self._replica_id} running during upgrade",
-    #     )
-    #     is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
-    #     if is_pipeline_engine:
-    #         logger.info("Starting pipeline engine execution loops")
-    #         self._llm_engine.signal_start_scheduling()
-    #     while not self.upgrade_state.is_weights_loaded():
-    #         step_outputs = self._llm_engine.step()
-    #         num_steps += 1
-
-    #         for output in step_outputs:
-    #             self._update_request_state(output)
-    #             if output.finished:
-    #                 num_processed_requests += 1
-    #                 pbar.update(1)
-    #     logger.info("Stop serving during upgrade")
-    #     if is_pipeline_engine:
-    #         self._llm_engine.signal_stop_scheduling()
-    #         logger.info("Stopping pipeline engine execution loops")
-            
-    #         while self._llm_engine.has_inflight_batches():
-    #             time.sleep(0.01)
-    #     pbar.close()
-    #     progress, tracker = self.save_progress()
-    #     return {"status": "READY_FOR_HANDOVER", "progress": progress, "tracker": tracker}
-
     def run_during_upgrade(self) -> dict:
         """Continue running with reduced capacity during upgrade."""
         self._llm_engine.scheduler.set_upgrade()
@@ -419,56 +385,18 @@ class BenchmarkRunner:
         if is_pipeline_engine:
             logger.info("Starting pipeline engine execution loops")
             self._llm_engine.signal_start_scheduling()
-        
-        # Step timeout in seconds
-        step_timeout = 2
-    
         while not self.upgrade_state.is_weights_loaded():
-            # Create a timeout mechanism for the step() call
-            step_output_queue = Queue()
-            
-            def step_thread_func():
-                try:
-                    result = self._llm_engine.step()
-                    step_output_queue.put(("success", result))
-                except Exception as e:
-                    logger.error(f"Error in step thread: {e}")
-                    step_output_queue.put(("error", e))
-        
-            # Start thread to call step() so we can timeout if it hangs
-            step_thread = Thread(target=step_thread_func, daemon=True)
-            step_thread.start()
-            
-            try:
-                # Wait for step result with timeout
-                result_type, step_outputs = step_output_queue.get(timeout=step_timeout)
-                
-                if result_type == "error":
-                    logger.warning(f"step() call failed: {step_outputs}")
-                    time.sleep(0.1)  # Brief pause before retrying
-                    continue
-            
-                # Process step outputs normally
-                num_steps += 1
-                for output in step_outputs:
-                    self._update_request_state(output)
-                    if output.finished:
-                        num_processed_requests += 1
-                        pbar.update(1)
-                        
-            except Empty:
-                logger.warning(f"step() call timed out after {step_timeout}s, might be stuck")
-                # Try to reset the engine's scheduling
-                try:
-                    logger.info("Attempting to unblock engine...")
-                    # Optionally reset the engine scheduling
-                    if is_pipeline_engine:
-                        self._llm_engine.signal_stop_scheduling()
-                        time.sleep(0.5)
-                        self._llm_engine.signal_start_scheduling()
-                except Exception as e:
-                    logger.error(f"Error trying to reset engine scheduling: {e}")
-        
+            step_outputs = self._llm_engine.step()
+            num_steps += 1
+            nr_generate_tokens = 0
+
+            for output in step_outputs:
+                self._update_request_state(output)
+                if output.finished:
+                    num_processed_requests += 1
+                    pbar.update(1)
+                nr_generate_tokens += 1
+            self._latency_tracker.log_tokens(nr_generate_tokens)
         logger.info("Stop serving during upgrade")
         if is_pipeline_engine:
             self._llm_engine.signal_stop_scheduling()
@@ -476,10 +404,85 @@ class BenchmarkRunner:
             
             while self._llm_engine.has_inflight_batches():
                 time.sleep(0.01)
-        
         pbar.close()
         progress, tracker = self.save_progress()
         return {"status": "READY_FOR_HANDOVER", "progress": progress, "tracker": tracker}
+
+    # def run_during_upgrade(self) -> dict:
+    #     """Continue running with reduced capacity during upgrade."""
+    #     self._llm_engine.scheduler.set_upgrade()
+    #     logger.info("Starting serving during upgrade")
+    #     num_processed_requests = 0
+    #     num_steps = 0
+    #     pbar = tqdm(
+    #         total=len(self._requests),
+    #         desc=f"Replica {self._replica_id} running during upgrade",
+    #     )
+    #     is_pipeline_engine = isinstance(self._llm_engine, PipelineParallelLLMEngine)
+    #     if is_pipeline_engine:
+    #         logger.info("Starting pipeline engine execution loops")
+    #         self._llm_engine.signal_start_scheduling()
+        
+    #     # Step timeout in seconds
+    #     step_timeout = 2
+    
+    #     while not self.upgrade_state.is_weights_loaded():
+    #         # Create a timeout mechanism for the step() call
+    #         step_output_queue = Queue()
+            
+    #         def step_thread_func():
+    #             try:
+    #                 result = self._llm_engine.step()
+    #                 step_output_queue.put(("success", result))
+    #             except Exception as e:
+    #                 logger.error(f"Error in step thread: {e}")
+    #                 step_output_queue.put(("error", e))
+        
+    #         # Start thread to call step() so we can timeout if it hangs
+    #         step_thread = Thread(target=step_thread_func, daemon=True)
+    #         step_thread.start()
+            
+    #         try:
+    #             # Wait for step result with timeout
+    #             result_type, step_outputs = step_output_queue.get(timeout=step_timeout)
+                
+    #             if result_type == "error":
+    #                 logger.warning(f"step() call failed: {step_outputs}")
+    #                 time.sleep(0.1)  # Brief pause before retrying
+    #                 continue
+            
+    #             # Process step outputs normally
+    #             num_steps += 1
+    #             for output in step_outputs:
+    #                 self._update_request_state(output)
+    #                 if output.finished:
+    #                     num_processed_requests += 1
+    #                     pbar.update(1)
+                        
+    #         except Empty:
+    #             logger.warning(f"step() call timed out after {step_timeout}s, might be stuck")
+    #             # Try to reset the engine's scheduling
+    #             try:
+    #                 logger.info("Attempting to unblock engine...")
+    #                 # Optionally reset the engine scheduling
+    #                 if is_pipeline_engine:
+    #                     self._llm_engine.signal_stop_scheduling()
+    #                     time.sleep(0.5)
+    #                     self._llm_engine.signal_start_scheduling()
+    #             except Exception as e:
+    #                 logger.error(f"Error trying to reset engine scheduling: {e}")
+        
+    #     logger.info("Stop serving during upgrade")
+    #     if is_pipeline_engine:
+    #         self._llm_engine.signal_stop_scheduling()
+    #         logger.info("Stopping pipeline engine execution loops")
+            
+    #         while self._llm_engine.has_inflight_batches():
+    #             time.sleep(0.01)
+        
+    #     pbar.close()
+    #     progress, tracker = self.save_progress()
+    #     return {"status": "READY_FOR_HANDOVER", "progress": progress, "tracker": tracker}
 
     def _run_normal(self) -> str:
         """Original run logic until upgrade needed or completion."""
@@ -567,12 +570,14 @@ class BenchmarkRunner:
             #     break
             step_outputs = self._llm_engine.step()
             num_steps += 1
-
+            nr_generate_tokens = 0
             for output in step_outputs:
                 self._update_request_state(output)
                 if output.finished:
                     num_processed_requests += 1
-                    pbar.update(1)        
+                    pbar.update(1)    
+                nr_generate_tokens += 1
+            self._latency_tracker.log_tokens(nr_generate_tokens)       
 
         end_time = time.monotonic()
         pbar.close()
@@ -717,7 +722,7 @@ class BenchmarkRunner:
             # Sort by number of generated tokens (fewer first), then by arrival time
             # This prioritizes requests with less prefill progress
             # TODO(XY): change a little bit
-            pending_list.sort(key=lambda x: (x['generated_tokens_count'], x['original_arrival_time']), reverse=True)
+            pending_list.sort(key=lambda x: (x['generated_tokens_count'], x['original_arrival_time']))
             logger.info("Sorting pending requests by prefill progress (less progress first), then arrival time")
         
         # Process sorted pending requests
@@ -814,6 +819,181 @@ class BenchmarkRunner:
         logger.info(f"Loaded progress with {len(self._finished_requests)} finished requests and {len(self._pending_requests)} pending requests")
         logger.info(f"Total requests in self._requests: {len(self._requests)}")
 
+    # def load_progress(self, progress: dict, track: LatencyTracker) -> None:
+    #         """Load saved progress to resume requests, preserving timing metrics."""
+    #         if progress is None:
+    #             return
+    #         self._latency_tracker = track
+                        
+    #         self._finished_requests = {}
+    #         self._pending_requests = {}
+    #         self._requests = []  # Initialize requests list
+        
+    #         # Restore finished requests state with their latencies and timing metrics
+    #         for seq_id, state in progress['finished_requests'].items():
+    #             finished_state = {
+    #                 'seq_id': seq_id,
+    #                 'prompt': state['prompt'],
+    #                 'prompt_token_ids': state['prompt_token_ids'],
+    #                 'current_text': state['generated_text'],
+    #                 'current_token_ids': state['generated_token_ids'],
+    #                 'finished': True,
+    #                 'latency': state['latency']  # Keep original latency
+    #             }
+                
+    #             # Restore timing metrics if available
+    #             if 'ttft' in state:
+    #                 finished_state['ttft'] = state['ttft']
+    #                 # Also log to the latency tracker
+    #                 self._latency_tracker.log_ttft(seq_id, state['ttft'])
+                
+    #             if 'tpot' in state:
+    #                 finished_state['tpot'] = state['tpot']
+    #                 # Also log to the latency tracker
+    #                 self._latency_tracker.log_tpot(seq_id, state['tpot'])
+                
+    #             self._finished_requests[seq_id] = finished_state
+    #             # Add to requests list to maintain correct total count
+    #             self._requests.append(None)  # Placeholder for finished request
+            
+    #         # Get the reschedule policy from the engine
+    #         reschedule_policy = self._llm_engine.upgrade_config.reschedule_policy
+            
+    #         # Organize pending requests based on policy
+    #         pending_list = []
+    #         for seq_id, state in progress['pending_requests'].items():
+    #             request = state['original_request']
+    #             original_start_time = state['start_time']
+    #             # Use arrival_time from request, fall back to start_time if not available
+    #             original_arrival_time = getattr(request, 'arrival_time', original_start_time)
+                
+    #             # Add to pending list with information needed for sorting
+    #             pending_list.append({
+    #                 'seq_id': seq_id,
+    #                 'state': state,
+    #                 'request': request,
+    #                 'original_start_time': original_start_time,
+    #                 'original_arrival_time': original_arrival_time,
+    #                 'generated_tokens_count': len(state['generated_token_ids_so_far'])
+    #             })
+        
+    #         # Sort based on reschedule policy
+    #         if reschedule_policy == UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME:
+    #             # Sort by original arrival time (earlier requests first)
+    #             pending_list.sort(key=lambda x: x['original_arrival_time'])
+    #             logger.info("Sorting pending requests by original arrival time")
+    #         elif reschedule_policy == UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS:
+    #             # Sort by number of generated tokens (fewer first), then by arrival time
+    #             # This prioritizes requests with less prefill progress
+    #             # TODO(XY): change a little bit
+    #             pending_list.sort(key=lambda x: (x['generated_tokens_count'], x['original_arrival_time']), reverse=True)
+    #             logger.info("Sorting pending requests by prefill progress (less progress first), then arrival time")
+            
+    #         # Process sorted pending requests
+    #         current_time = time.monotonic()
+    #         for item in pending_list:
+    #             seq_id = item['seq_id']
+    #             state = item['state']
+    #             request = item['request']
+    #             original_start_time = item['original_start_time']
+            
+    #             # Add request to the requests list
+    #             self._requests.append(request)
+                
+                
+                
+    #             # Prepare the new request state
+    #             new_request_state = {
+    #                 'seq_id': seq_id,
+    #                 'prompt': state['prompt'],
+    #                 'current_text': state['generated_text_so_far'],
+    #                 'current_token_ids': state['generated_token_ids_so_far'],
+    #                 'finished': False,
+    #                 'original_request': request,
+    #                 'start_time': original_start_time  # Preserve original start time
+    #             }
+                
+    #             # Restore TTFT if it was already calculated
+    #             if 'ttft' in state:
+    #                 new_request_state['ttft'] = state['ttft']
+    #                 # Also log to the latency tracker
+    #                 self._latency_tracker.log_ttft(seq_id, state['ttft'])
+                
+    #             # Restore TPOT calculation state if available
+    #             if 'tpot_sum' in state and 'tpot_samples' in state:
+    #                 new_request_state['tpot_sum'] = state['tpot_sum']
+    #                 new_request_state['tpot_samples'] = state['tpot_samples']
+            
+    #             # Restore token generation timestamp with appropriate adjustment
+    #             if 'token_generation_relative_time' in state:
+    #                 # Convert relative time back to absolute time based on the original start time
+    #                 token_gen_time = original_start_time + state['token_generation_relative_time']
+    #                 # But we need to adjust this to be relative to the current time
+    #                 # This is to avoid unrealistically large time gaps in token generation
+    #                 # due to the time spent during the upgrade
+    #                 adjusted_token_gen_time = current_time - (token_gen_time - original_start_time)
+    #                 new_request_state['token_generation_start_time'] = adjusted_token_gen_time
+                
+    #             if len(state['generated_token_ids_so_far']) > 0:  # If request was partially executed
+    #                 # Get generated tokens, limiting to 100 if there are more than 100 generated tokens
+    #                 generated_tokens = state['generated_token_ids_so_far']
+    #                 if len(generated_tokens) > 200:
+    #                     logger.info(f"Request {seq_id} has {len(generated_tokens)} generated tokens, limiting to 100 for prefill optimization")
+    #                     generated_tokens = generated_tokens[:200]
+    #                 logger.info(f"Resuming request {seq_id} with generated tokens {len(generated_tokens)}")
+                
+    #                 # Combine original prompt tokens with generated tokens (limited to 100) as new prompt
+    #                 new_prompt_token_ids = state['prompt_token_ids'] + generated_tokens
+                    
+    #                 # Calculate remaining tokens to generate
+    #                 remaining_tokens = request.num_decode_tokens - len(state['generated_token_ids_so_far'])
+                    
+    #                 sampling_params = SamplingParams(
+    #                     ignore_eos=True,
+    #                     max_tokens=remaining_tokens,
+    #                     temperature=0,
+    #                     top_p=1.0,
+    #                 )
+
+    #                 self._llm_engine.add_request(
+    #                     prompt=None,
+    #                     prompt_token_ids=new_prompt_token_ids,
+    #                     sampling_params=sampling_params,
+    #                     arrival_time=new_request_state['start_time'],
+    #                     seq_id=seq_id
+    #                 )
+                    
+    #                 # Update prompt tokens in request state
+    #                 new_request_state['prompt_token_ids'] = new_prompt_token_ids
+    #             else:  # For never executed requests, add original request
+    #                 sampling_params = SamplingParams(
+    #                     ignore_eos=True,
+    #                     max_tokens=request.num_decode_tokens,
+    #                     temperature=0,
+    #                     top_p=1.0,
+    #                 )
+    #                 prompt_token_ids = [1] * request.num_prefill_tokens
+
+
+    #                 self._llm_engine.add_request(
+    #                     prompt=None,
+    #                     prompt_token_ids=prompt_token_ids,
+    #                     sampling_params=sampling_params,
+    #                     arrival_time=new_request_state['start_time'],
+    #                     seq_id=seq_id
+    #                 )
+                    
+    #                 # Use original prompt tokens
+    #                 new_request_state['prompt_token_ids'] = state['prompt_token_ids']
+            
+    #             # Store the updated request state
+    #             self._request_states[seq_id] = new_request_state
+    #             # Add to pending queue
+    #             self._pending_requests[seq_id] = new_request_state
+                    
+    #         logger.info(f"Loaded progress with {len(self._finished_requests)} finished requests and {len(self._pending_requests)} pending requests")
+    #         logger.info(f"Total requests in self._requests: {len(self._requests)}")
+    
     def run(self) -> Any:
         """Main run method that handles different upgrade strategies."""
         self._llm_engine.reset_metrics()

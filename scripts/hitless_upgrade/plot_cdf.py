@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+
 import os
 
 def plot_combined_metrics(latency_files: dict, output_path: str, dataset_name: str = "Prefill Heavy Gen"):
@@ -35,7 +37,7 @@ def plot_combined_metrics(latency_files: dict, output_path: str, dataset_name: s
                     n = len(values)
                     cumulative_prob = np.arange(1, n + 1) / n
                     
-                    line = ax1.plot(values, cumulative_prob, '-', linewidth=2, label=label)[0]
+                    line = ax1.plot(values, cumulative_prob, '-', linewidth=4, label=label)[0]
                     color = line.get_color()
                     
                     # Store for combined legend
@@ -78,7 +80,7 @@ def plot_combined_metrics(latency_files: dict, output_path: str, dataset_name: s
                     n = len(values)
                     cumulative_prob = np.arange(1, n + 1) / n
                     
-                    line = ax2.plot(values, cumulative_prob, '-', linewidth=2, label=label)[0]
+                    line = ax2.plot(values, cumulative_prob, '-', linewidth=4, label=label)[0]
                     color = line.get_color()
                     
                     # Add percentile lines
@@ -102,24 +104,34 @@ def plot_combined_metrics(latency_files: dict, output_path: str, dataset_name: s
             print(f"Warning: File not found - {file_path}")
     
     # Customize the left subplot (TTFT)
-    ax1.set_xlabel('TTFT (seconds)', fontsize=20)
-    ax1.set_ylabel('CDF', fontsize=20)
+    ax1.tick_params(axis='x', labelsize=24)
+    ax1.tick_params(axis='y', labelsize=24)
+    ax1.set_xlabel('TTFT (seconds)', fontsize=24)
+    ax1.set_ylabel('CDF', fontsize=24)
     ax1.grid(True, which='both', linestyle='--', alpha=0.7)
     
     # Customize the right subplot (E2E latency)
-    ax2.set_xlabel('E2E Latency (seconds)', fontsize=20)
-    ax2.set_ylabel('CDF', fontsize=20)
+    ax2.tick_params(axis='x', labelsize=24)
+    ax2.tick_params(axis='y', labelsize=24)
+    ax2.set_xlabel('E2E Latency (seconds)', fontsize=24)
+    ax2.set_ylabel('CDF', fontsize=24)
     ax2.grid(True, which='both', linestyle='--', alpha=0.7)
-    
+    font_prop = FontProperties(size=24, weight='bold')
+    fig.legend(legend_lines, legend_labels,
+           loc='upper center',
+           bbox_to_anchor=(0.5, 1),
+           ncol=3,
+           prop=font_prop)
     # Add a single legend at the top center of the figure
-    fig.legend(legend_lines, legend_labels, loc='upper center', bbox_to_anchor=(0.5, 1), 
-               ncol=3, fontsize=16)  # ncol=3 to make the three labels appear in a row
+    # fig.legend(legend_lines, legend_labels, loc='upper center', bbox_to_anchor=(0.5, 1), 
+    #            ncol=3, fontsize=24,fontweight='bold') # ncol=3 to make the three labels appear in a row
     
     # Add dataset label on the left side
-    fig.text(0.03, 0.5, dataset_name, fontsize=20, rotation=90, va='center', ha='center')
+    fig.text(0.01, 0.5, dataset_name, fontsize=24, rotation=90, va='center', ha='center', weight='bold')
     
     # Adjust the layout to make room for the legend and dataset label
     plt.tight_layout()
+    plt.subplots_adjust(top=0.85, left=0.1, wspace=0.2)
     plt.subplots_adjust(top=0.85, left=0.1)  # Make space for the legend at the top and dataset label on the left
     
     # Create output directory if it doesn't exist
@@ -131,24 +143,72 @@ def plot_combined_metrics(latency_files: dict, output_path: str, dataset_name: s
 
 def main():
     latency_files = {
-        "Baseline": "logs/hitless_upgrade/bs_60/gpu_2_4/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/gpu_2_4/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "Baseline": "logs/hitless_upgrade/bs_60/trace/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/uniform_trace/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe": "logs/hitless_upgrade/bs_60/uniform_trace/prefill_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+        # Expand + ShareGPT
+        # "Baseline": "logs/hitless_upgrade/bs_60/gpu_2_4/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/gpu_2_4/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe":
+        # "logs/hitless_upgrade/bs_60/gpu_2_4/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+        
+        # Expand + Gen
+        # "Baseline": "logs/hitless_upgrade/bs_60/gpu_2_4/uniform_trace/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/gpu_2_4/uniform_trace/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe":
+        # "logs/hitless_upgrade/bs_60/gpu_2_4/uniform_trace/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+
+        # Shrink + Gen
+        # "Baseline": "logs/hitless_upgrade/bs_30/gpu_4_2/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_30/gpu_4_2/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe":
+        # "logs/hitless_upgrade/bs_30/gpu_4_2/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+
+        # Shrink + ShareGPT
+        "Baseline": "logs/hitless_upgrade/bs_40/gpu_4_2/no_serve/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+        "SwiftServe with FCFS": "logs/hitless_upgrade/bs_40/gpu_4_2/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
         "SwiftServe":
-        "logs/hitless_upgrade/bs_60/gpu_2_4/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+        "logs/hitless_upgrade/bs_40/gpu_4_2/decode_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+
+        # # Plan Change + ShareGPT
         # "Baseline": "logs/hitless_upgrade/bs_60/trace/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
         # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/trace/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
-        # "SwiftServe": "logs/hitless_upgrade/bs_60/trace/prefill_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+        # "SwiftServe":
+        # "logs/hitless_upgrade/bs_60/trace/prefill_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        
+        # Plan Change + Gen
+        # "Baseline": "logs/hitless_upgrade/bs_60/uniform_trace/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/uniform_trace/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe":
+        # "logs/hitless_upgrade/bs_60/uniform_trace/prefill_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
+
+        # "Baseline": "logs/hitless_upgrade/bs_60/uniform_trace/no_serve/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe with FCFS": "logs/hitless_upgrade/bs_60/uniform_trace/decode_only/kickout_immediately/by_arrival_time/by_arrival_time/latencies.csv",
+        # "SwiftServe": "logs/hitless_upgrade/bs_60/uniform_trace/prefill_only/kickout_immediately/by_arrival_time/by_prefill_status/latencies.csv",
     }
     
     # Create output directory
-    output_dir = "logs/hitless_upgrade/gpu_2_4/bs_120/"
+    # Expand + ShareGPT
+    # output_dir = "logs/hitless_upgrade/gpu_2_4/bs_60/trace/"
+    # Expand + Gen
+    # output_dir = "logs/hitless_upgrade/gpu_4_2/bs_60/uniform_trace/"
+    # Shrink + Gen
+    # output_dir = "logs/hitless_upgrade/gpu_4_2/bs_30/"
+    # Shrink + ShareGPT
+    output_dir = "logs/hitless_upgrade/gpu_4_2/bs_40/"
+    # Plan Change + ShareGPT
+    # output_dir = "logs/hitless_upgrade/trace/bs_60/"
+    # Plan Change + Gen
+    # output_dir = "logs/hitless_upgrade/uniform_trace/bs_60/"
+
     os.makedirs(output_dir, exist_ok=True)
     
     # Generate combined plot with TTFT and E2E latency side by side
     plot_combined_metrics(
         latency_files,
         output_path=f"{output_dir}/combined_latency_cdf.pdf",
-        dataset_name="ShareGPT"  # You can change this to the actual dataset name
+        dataset_name="ShareGPT"  
+        # dataset_name="Generated Dataset" 
     )
 
 if __name__ == "__main__":

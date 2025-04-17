@@ -1,7 +1,7 @@
-model: 01-ai/Yi-Coder-1.5B
+model: 01-ai/Yi-34B-200K
 replica_id: 0
 replica_resource_mapping: []
-tokenizer: 01-ai/Yi-Coder-1.5B
+tokenizer: 01-ai/Yi-34B-200K
 tokenizer_mode: auto
 trust_remote_code: true
 download_dir: null

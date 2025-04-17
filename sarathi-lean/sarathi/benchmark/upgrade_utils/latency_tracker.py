@@ -1,254 +1,421 @@
-"""
-Module for tracking and analyzing request latencies including TTFT and TPOT.
-"""
-
-import os
-import logging
-import statistics
-from typing import Dict, List, Any, Optional
-import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
-
-logger = logging.getLogger(__name__)
+import matplotlib.pyplot as plt
+from datetime import datetime
+import csv
+import os
+import time
+from collections import deque
 
 class LatencyTracker:
-    """
-    Tracks and analyzes latencies for benchmark requests.
-    
-    This class provides methods to log latencies, compute statistics,
-    and visualize latency distribution through CDF plots.
-    
-    Tracks three main metrics:
-    - E2E Latency: End-to-end latency for the entire request
-    - TTFT: Time To First Token
-    - TPOT: Time Per Output Token (average)
-    """
-    
-    def __init__(self, output_dir: str):
-        """
-        Initialize the latency tracker.
-        
-        Args:
-            output_dir: Directory to save latency plots and statistics
-        """
+    def __init__(self, output_dir):
         self.output_dir = output_dir
-        # Store individual metrics
-        self.latencies: Dict[str, float] = {}  # E2E latencies
-        self.ttft: Dict[str, float] = {}  # Time To First Token
-        self.tpot: Dict[str, float] = {}  # Time Per Output Token
-        
         os.makedirs(output_dir, exist_ok=True)
         
-    def log_latency(self, request_id: str, latency: float) -> None:
-        """
-        Log end-to-end latency for a specific request.
+        # Use fixed filename for easier comparison
+        self.csv_path = os.path.join(output_dir, 'request_latencies.csv')
+        self.throughput_path = os.path.join(output_dir, 'throughput_metrics.csv')
         
+        # Initialize latency CSV with headers
+        with open(self.csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['request_id', 'latency', 'ttft', 'tpot', 'total_tokens', 'timestamp'])
+        
+        # Initialize throughput CSV with headers (for instantaneous measurements)
+        with open(self.throughput_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['elapsed_time', 'tokens_generated'])
+        
+        # Throughput tracking
+        self.start_time = time.monotonic()
+        self.last_throughput_time = self.start_time
+        self.last_token_count = 0
+        self.total_token_count = 0
+        self.active_requests_count = 0
+        
+        # Sliding window for smoother throughput measurements
+        self.window_size = 1.0  # 1-second measurement window
+        self.token_history = deque()  # Stores (timestamp, token_count) tuples
+        
+        # Store TTFT and TPOT separately for flexibility
+        self.ttft_data = {}
+        self.tpot_data = {}
+
+    def log_ttft(self, request_id, ttft):
+        """Log Time To First Token for a request"""
+        self.ttft_data[request_id] = ttft
+
+    def log_tpot(self, request_id, tpot):
+        """Log Time Per Output Token for a request"""
+        self.tpot_data[request_id] = tpot
+    
+    def log_tokens(self, new_tokens):
+        """
+        Log tokens generated to track instantaneous throughput
         Args:
-            request_id: Unique identifier for the request
-            latency: End-to-end latency value in seconds
+            request_id: Unique ID for the request
+            token_count: Current total token count for this request
+            prev_token_count: Previous token count from last update
         """
-        logger.info(f"LogTracker: Request {request_id} latency: {latency:.4f}s")
-        self.latencies[request_id] = latency
+        current_time = time.monotonic()
+        
+        # Update total token count
+        self.total_token_count += new_tokens
+        
+        # Add to token history with timestamp
+        self.log_token_generation(current_time, self.total_token_count)
+        
+        # # Measure and record instantaneous throughput
+        # self._measure_throughput(current_time)
+        
+        return new_tokens
     
-    def log_ttft(self, request_id: str, ttft: float) -> None:
+    def log_token_generation(self, current_time, total_tokens):
         """
-        Log Time To First Token for a specific request.
+        Log each token generation event directly to the CSV file
+        """
+        # Calculate elapsed time since start
+        elapsed_time = current_time - self.start_time
         
-        Args:
-            request_id: Unique identifier for the request
-            ttft: Time to first token in seconds
-        """
-        self.ttft[request_id] = ttft
-    
-    def log_tpot(self, request_id: str, tpot: float) -> None:
-        """
-        Log Time Per Output Token for a specific request.
-        
-        Args:
-            request_id: Unique identifier for the request
-            tpot: Average time per output token in seconds
-        """
-        self.tpot[request_id] = tpot
-        
-    def get_statistics(self) -> Dict[str, float]:
-        """
-        Calculate statistical metrics for logged end-to-end latencies.
-        
-        Returns:
-            Dictionary containing latency statistics (min, max, mean, median, p50, p90, p95, p99)
-        """
-        return self._calculate_stats(self.latencies, "latency")
-    
-    def get_ttft_statistics(self) -> Dict[str, float]:
-        """
-        Calculate statistical metrics for TTFT values.
-        
-        Returns:
-            Dictionary containing TTFT statistics (min, max, mean, median, p50, p90, p95, p99)
-        """
-        return self._calculate_stats(self.ttft, "ttft")
-    
-    def get_tpot_statistics(self) -> Dict[str, float]:
-        """
-        Calculate statistical metrics for TPOT values.
-        
-        Returns:
-            Dictionary containing TPOT statistics (min, max, mean, median, p50, p90, p95, p99)
-        """
-        return self._calculate_stats(self.tpot, "tpot")
-    
-    def _calculate_stats(self, data_dict: Dict[str, float], metric_name: str) -> Dict[str, float]:
-        """
-        Calculate statistics for a given metric dictionary.
-        
-        Args:
-            data_dict: Dictionary mapping request_ids to metric values
-            metric_name: Name of the metric for logging
+        # Log the token generation event to CSV
+        with open(self.throughput_path, 'a', newline='') as f:
+            writer = csv.writer(f)
             
-        Returns:
-            Dictionary containing metric statistics
-        """
-        if not data_dict:
-            logger.warning(f"No {metric_name} data available for statistics calculation")
-            return {
-                "min": 0.0,
-                "max": 0.0,
-                "mean": 0.0,
-                "median": 0.0,
-                "p50": 0.0,
-                "p90": 0.0,
-                "p95": 0.0,
-                "p99": 0.0
-            }
+            # Write header if file is empty
+            if f.tell() == 0:
+                writer.writerow([
+                    'elapsed_time', 
+                    'token_count',
+                ])
             
-        values = list(data_dict.values())
+            # Write this token generation event
+            writer.writerow([
+                f"{elapsed_time:.6f}",
+                total_tokens
+            ])
         
-        # Calculate percentiles
-        p50 = np.percentile(values, 50)
-        p90 = np.percentile(values, 90)
-        p95 = np.percentile(values, 95)
-        p99 = np.percentile(values, 99)
+        # Still maintain token history for other purposes if needed
+        self.token_history.append((current_time, total_tokens))
+    
+    # def _measure_throughput(self, current_time):
+    #     """
+    #     Measure instantaneous throughput based on recent token generation
+    #     """
+    #     # Remove tokens that are outside the current window
+    #     window_start = current_time - self.window_size
+    #     while self.token_history and self.token_history[0][0] < window_start:
+    #         self.token_history.popleft()
         
-        return {
-            "min": min(values),
-            "max": max(values),
-            "mean": statistics.mean(values),
-            "median": statistics.median(values),
-            "p50": p50,
-            "p90": p90,
-            "p95": p95,
-            "p99": p99
+    #     # Calculate tokens in the current window
+    #     tokens_in_window = sum(tokens for _, tokens in self.token_history)
+        
+    #     # Only record if we have some tokens and enough time has passed (avoid too frequent recording)
+    #     time_since_last = current_time - self.last_throughput_time
+    #     if tokens_in_window > 0 and time_since_last >= 0.1:  # Record at most 10 times per second
+    #         # Calculate instantaneous throughput
+    #         elapsed_time = current_time - self.start_time
+    #         tokens_per_second = tokens_in_window / self.window_size
+            
+    #         # Record throughput
+    #         with open(self.throughput_path, 'a', newline='') as f:
+    #             writer = csv.writer(f)
+    #             writer.writerow([
+    #                 datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
+    #                 f"{elapsed_time:.6f}",
+    #                 tokens_in_window,
+    #                 f"{tokens_per_second:.2f}",
+    #                 self.active_requests_count
+    #             ])
+            
+    #         self.last_throughput_time = current_time
+    
+    
+    def request_started(self, request_id):
+        """Track when a request starts for active request counting"""
+        self.active_requests_count += 1
+    
+    def log_latency(self, request_id, latency, total_tokens=None):
+        """Log the complete latency measurement for a request"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Get tokens for this request
+        tokens = total_tokens if total_tokens is not None else 0
+        
+        # Get TTFT and TPOT if available
+        ttft = self.ttft_data.get(request_id, 0)
+        tpot = self.tpot_data.get(request_id, 0)
+        
+        with open(self.csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                request_id, 
+                latency, 
+                ttft,
+                tpot,
+                tokens,
+                timestamp
+            ])
+            
+        # Update active request count
+        self.active_requests_count = max(0, self.active_requests_count - 1)
+        
+        # Clean up tracking data
+        if request_id in self.ttft_data:
+            del self.ttft_data[request_id]
+        if request_id in self.tpot_data:
+            del self.tpot_data[request_id]
+
+    def plot_cdf(self, output_filename=None, label=None):
+        """Generate CDF plot from logged latencies"""
+        # Read the CSV file
+        df = pd.read_csv(self.csv_path)
+        
+        if len(df) == 0:
+            return
+            
+        # Sort latencies and calculate CDF
+        latencies = sorted(df['latency'].values)
+        n = len(latencies)
+        cumulative_prob = np.arange(1, n + 1) / n
+        
+        # Create the plot if it doesn't exist
+        if not plt.get_fignums():
+            plt.figure(figsize=(10, 6))
+            plt.grid(True, alpha=0.3)
+            plt.xlabel('Latency (seconds)')
+            plt.ylabel('Cumulative Probability')
+            plt.title('Latency CDF')
+        
+        # Plot CDF with label if provided
+        label = label if label else os.path.basename(os.path.dirname(self.output_dir))
+        line = plt.plot(latencies, cumulative_prob, '-', linewidth=2, label=label)[0]
+        color = line.get_color()
+        
+        # Add percentile lines
+        percentiles = [50, 90, 95, 99]
+        for p in percentiles:
+            percentile_value = np.percentile(latencies, p)
+            plt.axvline(x=percentile_value, color=color, linestyle='--', alpha=0.2)
+            y_offset = 0.1 * (percentiles.index(p) / len(percentiles))
+            plt.text(percentile_value, 0.2 + y_offset, f'{label}\np{p}={percentile_value:.2f}s',
+                    rotation=90, verticalalignment='center', fontsize=8)
+        
+        plt.grid(True, which='both', linestyle='--', alpha=0.7)
+        plt.legend()
+        
+        # Save plot if filename provided
+        if output_filename:
+            plt.savefig(os.path.join(self.output_dir, output_filename))
+            plt.close()
+    
+    def plot_throughput(self, output_filename=None, window_size=5):
+        """
+        Generate throughput over time plot
+        Args:
+            output_filename: Name of file to save plot
+            window_size: Size of rolling average window in data points
+        """
+        # Read the throughput CSV file
+        df = pd.read_csv(self.throughput_path)
+        
+        if len(df) == 0:
+            return
+        
+        # Create the plot
+        plt.figure(figsize=(12, 6))
+        
+        # Plot instantaneous throughput
+        plt.scatter(df['elapsed_time'], df['tokens_per_second'], alpha=0.3, color='blue', label='Instantaneous')
+        
+        # Calculate rolling average if enough data points
+        if len(df) > window_size:
+            df['smoothed_tps'] = df['tokens_per_second'].rolling(window=window_size).mean()
+            plt.plot(df['elapsed_time'], df['smoothed_tps'], linewidth=2, color='darkblue', label=f'{window_size}-point rolling avg')
+        
+        # Add second y-axis for active requests
+        ax2 = plt.gca().twinx()
+        ax2.plot(df['elapsed_time'], df['active_requests'], color='red', linestyle='--', label='Active requests')
+        ax2.set_ylabel('Active Requests', color='red')
+        ax2.tick_params(axis='y', colors='red')
+        
+        # Format the plot
+        plt.grid(True, which='both', linestyle='--', alpha=0.7)
+        plt.xlabel('Elapsed Time (seconds)')
+        plt.ylabel('Tokens per Second')
+        plt.title('Instantaneous Throughput Over Time')
+        
+        # Combine legends from both axes
+        lines1, labels1 = plt.gca().get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        plt.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+        
+        # Save plot if filename provided
+        if output_filename:
+            plt.savefig(os.path.join(self.output_dir, output_filename))
+            plt.close()
+        else:
+            plt.tight_layout()
+            plt.show()
+
+    def get_statistics(self):
+        """Calculate and return basic statistics"""
+        df = pd.read_csv(self.csv_path)
+        throughput_df = pd.read_csv(self.throughput_path) if os.path.exists(self.throughput_path) else None
+        
+        stats = {
+            'count': len(df),
+            'mean_latency': df['latency'].mean(),
+            'median_latency': df['latency'].median(),
+            'p90_latency': df['latency'].quantile(0.90),
+            'p95_latency': df['latency'].quantile(0.95),
+            'p99_latency': df['latency'].quantile(0.99),
+            'min_latency': df['latency'].min(),
+            'max_latency': df['latency'].max()
         }
         
-    def plot_cdf(self, metric: str = "latency") -> None:
+        # Add TTFT and TPOT stats if available
+        if 'ttft' in df.columns and len(df) > 0:
+            stats.update({
+                'mean_ttft': df['ttft'].mean(),
+                'median_ttft': df['ttft'].median(),
+                'p90_ttft': df['ttft'].quantile(0.90)
+            })
+        
+        if 'tpot' in df.columns and len(df) > 0:
+            stats.update({
+                'mean_tpot': df['tpot'].mean(),
+                'median_tpot': df['tpot'].median(),
+                'p90_tpot': df['tpot'].quantile(0.90)
+            })
+        
+        # Add throughput stats if available
+        if throughput_df is not None and len(throughput_df) > 0:
+            stats.update({
+                'mean_throughput': throughput_df['tokens_per_second'].mean(),
+                'peak_throughput': throughput_df['tokens_per_second'].max(),
+                'last_throughput': throughput_df['tokens_per_second'].iloc[-1],
+                'peak_concurrent_requests': throughput_df['active_requests'].max()
+            })
+        
+        return stats
+
+    def export_latencies(self, include_throughput=True):
+        """Export detailed metrics including throughput data"""
+        # Generate basic latency CDF
+        self.plot_cdf(output_filename='latency_cdf.png')
+        
+        # Generate throughput plot if enabled
+        if include_throughput:
+            self.plot_throughput(output_filename='throughput.png')
+        
+        # Export stats to a summary file
+        stats = self.get_statistics()
+        with open(os.path.join(self.output_dir, 'stats_summary.txt'), 'w') as f:
+            f.write("Performance Metrics Summary\n")
+            f.write("==========================\n\n")
+            
+            f.write("Latency Metrics (seconds):\n")
+            f.write(f"  Total Requests: {stats['count']}\n")
+            f.write(f"  Mean Latency: {stats['mean_latency']:.4f}\n")
+            f.write(f"  Median Latency: {stats['median_latency']:.4f}\n")
+            f.write(f"  p90 Latency: {stats['p90_latency']:.4f}\n")
+            f.write(f"  p95 Latency: {stats['p95_latency']:.4f}\n")
+            f.write(f"  p99 Latency: {stats['p99_latency']:.4f}\n\n")
+            
+            if 'mean_ttft' in stats:
+                f.write("Time To First Token (TTFT) Metrics (seconds):\n")
+                f.write(f"  Mean TTFT: {stats['mean_ttft']:.4f}\n")
+                f.write(f"  Median TTFT: {stats['median_ttft']:.4f}\n")
+                f.write(f"  p90 TTFT: {stats['p90_ttft']:.4f}\n\n")
+            
+            if 'mean_tpot' in stats:
+                f.write("Time Per Output Token (TPOT) Metrics (seconds/token):\n")
+                f.write(f"  Mean TPOT: {stats['mean_tpot']:.4f}\n")
+                f.write(f"  Median TPOT: {stats['median_tpot']:.4f}\n")
+                f.write(f"  p90 TPOT: {stats['p90_tpot']:.4f}\n\n")
+            
+            if 'mean_throughput' in stats:
+                f.write("Throughput Metrics (tokens/second):\n")
+                f.write(f"  Mean Throughput: {stats['mean_throughput']:.2f}\n")
+                f.write(f"  Peak Throughput: {stats['peak_throughput']:.2f}\n")
+                f.write(f"  Latest Throughput: {stats['last_throughput']:.2f}\n")
+                f.write(f"  Peak Concurrent Requests: {stats['peak_concurrent_requests']}\n")
+
+    @staticmethod
+    def plot_combined_cdf(latency_files: dict, output_path: str):
         """
-        Generate and save a CDF (Cumulative Distribution Function) plot for the specified metric.
+        Plot combined CDF from multiple latency files.
         
         Args:
-            metric: Which metric to plot ("latency", "ttft", or "tpot")
-            
-        The plot is saved to the output directory specified during initialization.
+            latency_files: Dict mapping strategy names to csv file paths
+            output_path: Path to save the combined plot
         """
-        data_dict = None
-        title = ""
-        y_label = "seconds"
-        
-        if metric == "latency":
-            data_dict = self.latencies
-            title = "End-to-End Latency CDF"
-        elif metric == "ttft":
-            data_dict = self.ttft
-            title = "Time To First Token (TTFT) CDF"
-        elif metric == "tpot":
-            data_dict = self.tpot
-            title = "Time Per Output Token (TPOT) CDF"
-            y_label = "seconds per token"
-        else:
-            logger.error(f"Unknown metric: {metric}")
-            return
-            
-        if not data_dict:
-            logger.warning(f"No {metric} data available for plotting CDF")
-            return
-            
-        values = list(data_dict.values())
-        values.sort()
-        
-        # Calculate CDF values
-        y_values = np.arange(1, len(values) + 1) / len(values)
-        
-        # Create plot
         plt.figure(figsize=(10, 6))
-        plt.plot(values, y_values)
-        plt.grid(True, linestyle='--', alpha=0.7)
-        plt.xlabel(f'{metric.upper()} ({y_label})')
+        
+        for label, file_path in latency_files.items():
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path)
+                latencies = sorted(df['latency'].values)
+                n = len(latencies)
+                cumulative_prob = np.arange(1, n + 1) / n
+                
+                line = plt.plot(latencies, cumulative_prob, '-', linewidth=2, label=label)[0]
+                color = line.get_color()
+                
+                # Add percentile lines
+                percentiles = [50, 90, 95, 99]
+                for i, p in enumerate(percentiles):
+                    percentile_value = np.percentile(latencies, p)
+                    plt.axvline(x=percentile_value, color=color, linestyle='--', alpha=0.2)
+                    y_offset = 0.1 * (i / len(percentiles))
+                    plt.text(percentile_value, 0.2 + y_offset, 
+                            f'{label}\np{p}={percentile_value:.2f}s',
+                            rotation=90, verticalalignment='center', fontsize=8)
+        
+        plt.xlabel('Latency (seconds)')
         plt.ylabel('Cumulative Probability')
-        plt.title(title)
+        plt.title('Request Latency CDF Comparison')
+        plt.grid(True, which='both', linestyle='--', alpha=0.7)
+        plt.legend()
         
-        # Add percentile markers
-        stats = self._calculate_stats(data_dict, metric)
-        percentiles = [50, 90, 95, 99]
-        percentile_keys = ['p50', 'p90', 'p95', 'p99']
-        
-        for i, p in enumerate(percentiles):
-            plt.axvline(x=stats[percentile_keys[i]], color='r', linestyle='--', alpha=0.5)
-            plt.text(stats[percentile_keys[i]] * 1.05, 0.1 + i * 0.05, 
-                     f'P{p}={stats[percentile_keys[i]]:.2f}s', 
-                     color='r')
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f'{metric}_cdf.png'))
+        # Save the combined plot
+        plt.savefig(output_path, bbox_inches='tight', dpi=300)
         plt.close()
         
-        logger.info(f"{metric.upper()} CDF plot saved to {self.output_dir}/{metric}_cdf.png")
-    
-    def plot_all_cdfs(self) -> None:
-        """Generate and save CDF plots for all metrics (latency, TTFT, TPOT)."""
-        self.plot_cdf("latency")
-        self.plot_cdf("ttft")
-        self.plot_cdf("tpot")
-        
-    def export_latencies(self, file_path: Optional[str] = None) -> None:
+    @staticmethod
+    def plot_combined_throughput(throughput_files: dict, output_path: str):
         """
-        Export all latency data to a CSV file.
+        Plot combined throughput from multiple files.
         
         Args:
-            file_path: Optional path to save the CSV file. If None, saves to output_dir/latencies.csv
+            throughput_files: Dict mapping strategy names to csv file paths
+            output_path: Path to save the combined plot
         """
-        if file_path is None:
-            file_path = os.path.join(self.output_dir, 'latencies.csv')
-            
-        with open(file_path, 'w') as f:
-            f.write("request_id,e2e_latency_seconds,ttft_seconds,tpot_seconds\n")
-            # Get all unique request IDs across all metrics
-            all_request_ids = set(list(self.latencies.keys()) + 
-                                 list(self.ttft.keys()) + 
-                                 list(self.tpot.keys()))
-            logger.info(f"Exporting latency len of self.latencies is {len(self.latencies)} len of self.ttft is {len(self.ttft)} len of self.tpot is {len(self.tpot)}")
-            for req_id in all_request_ids:
-                e2e_latency = self.latencies.get(req_id, "")
-                ttft = self.ttft.get(req_id, "")
-                tpot = self.tpot.get(req_id, "")
-                f.write(f"{req_id},{e2e_latency},{ttft},{tpot}\n")
+        plt.figure(figsize=(12, 6))
+        
+        for label, file_path in throughput_files.items():
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path)
                 
-        logger.info(f"Latency data exported to {file_path}")
+                if len(df) == 0:
+                    continue
+                    
+                # Create smooth line
+                window_size = min(15, max(5, len(df) // 10))  # Adaptive window size
+                if len(df) > window_size:
+                    df['smoothed_tps'] = df['tokens_per_second'].rolling(window=window_size).mean()
+                    plt.plot(df['elapsed_time'], df['smoothed_tps'], 
+                            linewidth=2, label=f'{label}')
+                else:
+                    plt.plot(df['elapsed_time'], df['tokens_per_second'], 
+                            linewidth=2, label=f'{label}')
         
-    def print_summary(self) -> None:
-        """Print a summary of all latency statistics to the logger."""
-        e2e_stats = self.get_statistics()
-        ttft_stats = self.get_ttft_statistics()
-        tpot_stats = self.get_tpot_statistics()
+        plt.xlabel('Elapsed Time (seconds)')
+        plt.ylabel('Tokens per Second')
+        plt.title('Instantaneous Throughput Comparison')
+        plt.grid(True, which='both', linestyle='--', alpha=0.7)
+        plt.legend()
         
-        logger.info("===== Latency Statistics Summary =====")
-        logger.info("End-to-End Latency Statistics:")
-        for key, value in e2e_stats.items():
-            logger.info(f"  {key}: {value:.4f}s")
-            
-        logger.info("\nTime To First Token (TTFT) Statistics:")
-        for key, value in ttft_stats.items():
-            logger.info(f"  {key}: {value:.4f}s")
-            
-        logger.info("\nTime Per Output Token (TPOT) Statistics:")
-        for key, value in tpot_stats.items():
-            logger.info(f"  {key}: {value:.4f}s per token")
-        logger.info("=====================================")
+        # Save the combined plot
+        plt.savefig(output_path, bbox_inches='tight', dpi=300)
+        plt.close()

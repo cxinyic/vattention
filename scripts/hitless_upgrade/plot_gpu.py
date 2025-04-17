@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
+from matplotlib.font_manager import FontProperties
 
 def plot_utilization_metrics(baseline_file, swiftserve_file, output_prefix=None, 
                             start_idx=10, end_idx=140, interval=0.5):
@@ -58,7 +59,7 @@ def plot_utilization_metrics(baseline_file, swiftserve_file, output_prefix=None,
         'avg_gpu_utilization', 
         'GPU Utilization Comparison: Baseline vs SwiftServe',
         'Average Compute Utilization (%)',
-        output_prefix + '_gpu_utilization.pdf' if output_prefix else None
+        output_prefix + '_compute_utilization.pdf' if output_prefix else None
     )
     
     # Plot memory utilization if available
@@ -91,9 +92,9 @@ def plot_single_metric(baseline_data, swiftserve_data, metric_column, title, yla
     
     # Plot the data
     plt.plot(baseline_data['time'], baseline_data[metric_column], 
-             label='Baseline', color='#1f77b4', linewidth=2)
+             label='Baseline', color='#1f77b4', linewidth=4)
     plt.plot(swiftserve_data['time'], swiftserve_data[metric_column], 
-             label='SwiftServe', color='#ff7f0e', linewidth=2)
+             label='SwiftServe', color='#ff7f0e', linewidth=4)
     
     # Add horizontal lines for the means
     baseline_mean = baseline_data[metric_column].mean()
@@ -102,15 +103,18 @@ def plot_single_metric(baseline_data, swiftserve_data, metric_column, title, yla
     plt.axhline(y=swiftserve_mean, color='#ff7f0e', linestyle='--', alpha=0.7)
     
     # Add labels and title
-    plt.xlabel('Time (seconds)', fontsize=12)
-    plt.ylabel(ylabel, fontsize=12)
+    plt.xlabel('Time (seconds)', fontsize=20)
+    plt.ylabel(ylabel, fontsize=20)
     # plt.title(title, fontsize=14)
     
     # Add grid for better readability
     plt.grid(True, linestyle='--', alpha=0.5)
     
     # Add legend
-    plt.legend(fontsize=12)
+    font_prop = FontProperties(size=20, weight='bold')
+    plt.legend(fontsize=20, prop=font_prop)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
     
     # Compute statistics
     baseline_stats = {

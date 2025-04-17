@@ -32,7 +32,7 @@ def create_config(
     attn_backend: str,
     output_dir: str,
     upgrade_config: UpgradeConfig,
-    context_length: int = 2048,
+    context_length: int = 2048+512,
     block_size: int = None,
     tp_degree: int = 4,
     pp_degree: int = 1,
@@ -63,21 +63,21 @@ def create_config(
         # request generator config
         "request_generator_provider": "synthetic",
         "synthetic_request_generator_interval_provider": "static",
-        "synthetic_request_generator_num_requests": batch_size *2  ,
+        "synthetic_request_generator_num_requests": batch_size * 3   ,
         # uniform only
-        # "synthetic_request_generator_length_provider": "uniform",
-        # "trace_request_length_generator_trace_file": online_trace_file,
-        # "uniform_request_length_generator_max_tokens": 786,
-        # "uniform_request_length_generator_min_tokens": 256,
-        # "uniform_request_length_generator_prefill_to_decode_ratio": 4,
+        "synthetic_request_generator_length_provider": "uniform",
+        "trace_request_length_generator_trace_file": online_trace_file,
+        "uniform_request_length_generator_max_tokens": 2048+512,
+        "uniform_request_length_generator_min_tokens": 2048,
+        "uniform_request_length_generator_prefill_to_decode_ratio": 0.125,
 
         # trace only
-        "synthetic_request_generator_length_provider": "trace",
-        "trace_request_length_generator_trace_file": online_trace_file,
-        "trace_request_length_generator_prefill_scale_factor": 1,
-        "trace_request_length_generator_decode_scale_factor": 1,
-        "trace_request_length_generator_min_tokens": 500,
-        "trace_request_length_generator_max_tokens": 1500,
+        # "synthetic_request_generator_length_provider": "trace",
+        # "trace_request_length_generator_trace_file": online_trace_file,
+        # "trace_request_length_generator_prefill_scale_factor": 1,
+        # "trace_request_length_generator_decode_scale_factor": 1,
+        # "trace_request_length_generator_min_tokens": 500,
+        # "trace_request_length_generator_max_tokens": 4096,
         
         # scheduler config
         "replica_scheduler_provider": "sarathi",
@@ -158,6 +158,7 @@ def run_benchmark(
             base_output_dir,
             f"bs_{batch_size}",
             "gpu_2_4",
+            "throughput",
             upgrade_config.serving_strategy.name.lower(),
             upgrade_config.drain_strategy.name.lower(),
             upgrade_config.selection_policy.name.lower(),
@@ -184,7 +185,7 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=4,
+        tp_degree=2,
         pp_degree=1,
         upgrade_config=old_engine_config
     )
@@ -208,7 +209,7 @@ def run_benchmark(
         batch_size=batch_size,
         attn_backend=attn_backend,
         output_dir=output_dir,
-        tp_degree=2,
+        tp_degree=4,
         pp_degree=1,
         upgrade_config=new_engine_config
     )
@@ -235,13 +236,13 @@ def main():
     models = ["01-ai/Yi-34B-200K"]
     # models = ["meta-llama/Llama-2-70b-hf"]
     attn_backends = ["fa_vattn"]
-    batch_sizes = [60]
+    batch_sizes = [100]
     
     # Create the upgrade configuration once
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=30,
-    #     # original_gpu_count=2,
+    #     upgrade_time=70,
+    #     original_gpu_count=2,
     #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
     #     drain_timeout=0,
     #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
@@ -269,28 +270,29 @@ def main():
     #     serving_strategy=UpgradeStrategy.ServingStrategy.PREFILL_ONLY,
     #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
     # )
-    # upgrade_config = UpgradeConfig(
-    #     strategy=UpgradeStrategy.Mode.UPGRADE,
-    #     upgrade_time=30,
-
-    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
-    #     drain_timeout=0,
-    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
-    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-    #     serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
-    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
-    # )
     upgrade_config = UpgradeConfig(
         strategy=UpgradeStrategy.Mode.UPGRADE,
-        upgrade_time=30,
-        # original_gpu_count=2,
+        upgrade_time=70,
+        original_gpu_count=2,
+
         drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
         drain_timeout=0,
         kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
         selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
-        serving_strategy=UpgradeStrategy.ServingStrategy.NO_SERVE,
-        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+        serving_strategy=UpgradeStrategy.ServingStrategy.DECODE_ONLY,
+        reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_PREFILL_STATUS
     )
+    # upgrade_config = UpgradeConfig(
+    #     strategy=UpgradeStrategy.Mode.UPGRADE,
+    #     upgrade_time=70,
+    #     # original_gpu_count=2,
+    #     drain_strategy=UpgradeStrategy.DrainStrategy.KICKOUT_IMMEDIATELY,
+    #     drain_timeout=0,
+    #     kickout_strategy=UpgradeStrategy.KickoutStrategy.SELECTED_REQUESTS,
+    #     selection_policy=UpgradeStrategy.SelectionPolicy.BY_ARRIVAL_TIME,
+    #     serving_strategy=UpgradeStrategy.ServingStrategy.NO_SERVE,
+    #     reschedule_policy=UpgradeStrategy.ReschedulePolicy.BY_ARRIVAL_TIME
+    # )
     # upgrade_config = UpgradeConfig(
     #     strategy=UpgradeStrategy.Mode.UPGRADE,
     #     upgrade_time=40,
